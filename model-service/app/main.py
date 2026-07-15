@@ -40,6 +40,7 @@ def health() -> dict:
         "ok": True,
         "yolo_model": os.getenv("YOLO_MODEL", "yolov8n.pt"),
         "classifier_model": os.getenv("CLASSIFIER_MODEL", "microsoft/resnet-50"),
+        "classifier_enabled": os.getenv("ENABLE_CLASSIFIER", "false").strip().lower() in {"1", "true", "yes", "on"},
     }
 
 
@@ -52,7 +53,8 @@ def root() -> dict:
 def warmup(authorization: str | None = Header(default=None)) -> dict:
     verify_token(authorization)
     get_yolo_model()
-    get_classifier()
+    if os.getenv("ENABLE_CLASSIFIER", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        get_classifier()
     return {"ok": True, "message": "Model weights are loaded."}
 
 
@@ -67,7 +69,7 @@ def identify(payload: IdentifyRequest, authorization: str | None = Header(defaul
             "card": card,
             "model": (
                 f"YOLO={os.getenv('YOLO_MODEL', 'yolov8n.pt')} + "
-                f"classifier={os.getenv('CLASSIFIER_MODEL', 'microsoft/resnet-50')}"
+                f"classifier={os.getenv('CLASSIFIER_MODEL', 'microsoft/resnet-50') if os.getenv('ENABLE_CLASSIFIER', 'false').strip().lower() in {'1', 'true', 'yes', 'on'} else 'disabled'}"
             ),
         }
     except Exception as exc:

@@ -9,6 +9,10 @@ from .image_utils import crop_bbox
 from .knowledge import build_card, normalize_label
 
 
+def _env_enabled(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _center_weight(bbox: list[float]) -> float:
     x, y, width, height = bbox
     cx = x + width / 2
@@ -73,6 +77,9 @@ def detect_primary_object(image: Image.Image) -> tuple[Image.Image, list[dict], 
 
 
 def classify(image: Image.Image) -> list[dict]:
+    if not _env_enabled("ENABLE_CLASSIFIER"):
+        return []
+
     raw_results = get_classifier()(image, top_k=int(os.getenv("CLASSIFIER_TOP_K", "5")))
     return [{"label": normalize_label(str(item["label"])), "score": float(item["score"])} for item in raw_results]
 
@@ -80,7 +87,7 @@ def classify(image: Image.Image) -> list[dict]:
 def identify_image(image: Image.Image) -> dict:
     crop, detections, detector_label, detector_confidence = detect_primary_object(image)
     classifications = classify(crop)
-    classifier_top = classifications[0] if classifications else {"label": detector_label or "object", "score": 0.0}
+    classifier_top = classifications[0] if classifications else {"label": detector_label or "object", "score": detector_confidence}
     classifier_label = classifier_top["label"]
     classifier_confidence = float(classifier_top["score"])
 
@@ -97,7 +104,10 @@ def identify_image(image: Image.Image) -> dict:
     visual_clues = []
     if detector_label:
         visual_clues.append(f"Detector located a primary {detector_label} in the frame.")
-    visual_clues.extend(f"Classifier candidate: {item['label']} ({round(item['score'] * 100)}%)." for item in classifications[:3])
+    if classifications:
+        visual_clues.extend(f"Classifier candidate: {item['label']} ({round(item['score'] * 100)}%)." for item in classifications[:3])
+    else:
+        visual_clues.append("Running in low-memory detector-only mode.")
     alternatives = [{"label": item["label"], "confidence": round(float(item["score"]), 4), "source": "classifier"} for item in classifications[:5]]
 
     return build_card(label=label, confidence=confidence, visual_clues=visual_clues, detections=detections, alternatives=alternatives)

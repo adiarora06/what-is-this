@@ -10,6 +10,8 @@ services:
         value: yolov8n.pt
       - key: CLASSIFIER_MODEL
         value: microsoft/resnet-50
+      - key: ENABLE_CLASSIFIER
+        value: "false"
       - key: MODEL_DEVICE
         value: "-1"
       - key: YOLO_CONFIDENCE
