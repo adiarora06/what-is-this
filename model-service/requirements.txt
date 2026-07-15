@@ -4,6 +4,5 @@ pillow>=11,<12
 python-multipart>=0.0.20
 torch>=2.5
 torchvision>=0.20
-transformers>=4.48
+transformers>=4.48,<5
 ultralytics>=8.3
-
