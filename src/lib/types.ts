@@ -18,6 +18,21 @@ export type ObjectCard = {
   purchaseQuery: string;
   purchaseLinks: PurchaseLink[];
   safetyNote?: string;
+  source?: string;
+  correctedFrom?: string;
+  detections?: Array<{ label: string; confidence: number; bbox: number[] }>;
+  alternatives?: Array<{ label: string; confidence: number; source?: string }>;
+};
+
+export type CatalogEntry = {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  objectName: string;
+  category: string;
+  notes: string;
+  matchLabels: string[];
+  image?: string;
 };
 
 export type IdentifyResponse =

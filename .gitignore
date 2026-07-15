@@ -3,5 +3,11 @@ node_modules
 .env
 .env*.local
 *.log
-
+tsconfig.tsbuildinfo
+.DS_Store
+__pycache__
+*.py[cod]
+model-service/.venv
+model-service/yolov*.pt
+model-service/runs
 .vercel

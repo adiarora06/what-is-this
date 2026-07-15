@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: what-is-this-model-service
+    runtime: docker
+    rootDir: model-service
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: YOLO_MODEL
+        value: yolov8x.pt
+      - key: CLASSIFIER_MODEL
+        value: facebook/convnext-base-224-22k-1k
+      - key: MODEL_DEVICE
+        value: "-1"
+      - key: YOLO_CONFIDENCE
+        value: "0.25"
+      - key: CLASSIFIER_TOP_K
+        value: "5"
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: VISION_BACKEND_TOKEN
+        generateValue: true
+

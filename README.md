@@ -1,50 +1,61 @@
 # What Is This? Mobile
 
-A phone-first object identifier for Vercel.
+A phone-first object identifier for Vercel with a real computer-vision backend.
 
-Point a phone camera at one object, hold it still for 2-5 seconds, and the app captures the clearest frame. It then asks a vision model to identify the object and returns:
+The phone app captures the clearest frame after a 2-5 second hold, sends it to your own CV backend, then returns an object card with name, confidence, about text, use cases, care tips, purchase links, and saved/storyboard actions.
 
-- Object name and confidence.
-- An “About Me” card written from the object’s point of view.
-- Visual clues.
-- Common use cases.
-- Care tips.
-- Shopping/search links.
-- Save-later storyboard stored in the browser.
+## Architecture
+
+- **Next.js on Vercel**: phone camera UI, storyboard, learning catalog, `/api/identify` proxy.
+- **Python model service**: YOLO detection, primary-object crop, ConvNeXt classification, deterministic result cards.
+- **OpenAI**: optional fallback only when `ALLOW_OPENAI_FALLBACK=true`.
 
 ## Run Locally
+
+Start the CV backend:
+
+```bash
+cd /Users/adiarora/Documents/Codex/2026-07-05/i-wa/outputs/what-is-this-mobile/model-service
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --host 127.0.0.1 --port 8010 --reload
+```
+
+Warm the models:
+
+```bash
+curl -X POST http://127.0.0.1:8010/warmup
+```
+
+Start the phone app:
 
 ```bash
 cd /Users/adiarora/Documents/Codex/2026-07-05/i-wa/outputs/what-is-this-mobile
 npm install
 cp .env.example .env.local
-# Add OPENAI_API_KEY to .env.local
 npm run dev
 ```
 
-Open `http://localhost:3000` on your phone over the same network, or use a tunneling service. Camera access requires HTTPS on most phones, except for localhost.
+For local testing, keep the backend URL in `.env.local`:
 
-## Deploy To Vercel
+```text
+VISION_BACKEND_URL=http://127.0.0.1:8010
+ALLOW_OPENAI_FALLBACK=false
+```
+
+## Deploy
+
+Deploy the Next app to Vercel. Host `model-service/` separately on Render, Railway, Fly.io, Modal, Hugging Face Spaces, Replicate, or a VPS. Set these Vercel env vars:
 
 ```bash
-npx vercel@latest login
-npx vercel@latest
-npx vercel@latest env add OPENAI_API_KEY
-npx vercel@latest env add OPENAI_MODEL
+npx vercel@latest env add VISION_BACKEND_URL
+npx vercel@latest env add VISION_BACKEND_TOKEN
 npx vercel@latest --prod
 ```
 
-Recommended default:
+The repo includes `render.yaml` and `model-service/Dockerfile` for a Render Docker deployment.
 
-```text
-OPENAI_MODEL=gpt-5.6-luna
-```
+## Learning Catalog
 
-Use a stronger model if you need better brand/model recognition. Keep the API key server-side only; do not expose it in `NEXT_PUBLIC_*` variables.
-
-## Product Notes
-
-- The client samples frames during the hold window and chooses the sharpest frame using an edge/brightness score.
-- The model sees one image, not a live video stream. That keeps latency and cost much lower.
-- Purchase buttons are search links, not affiliate links or guaranteed product matches.
-- Storyboard saves locally in the browser. For account sync, add a database later.
+If the backend is wrong or too generic, correct the object name/category in the app. Corrections are saved locally and reused when future backend labels match. Export `what-is-this-catalog.json` to seed a future custom training dataset or visual-search catalog.
