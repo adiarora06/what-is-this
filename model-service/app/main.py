@@ -6,7 +6,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from .image_utils import image_from_data_url
-from .model import get_classifier, get_yolo_model, identify_image
+from .model import get_classifier_session, get_labels, identify_image
 from .schemas import IdentifyRequest, IdentifyResponse
 
 app = FastAPI(title="What Is This CV Model Service", version="0.1.0")
@@ -38,9 +38,8 @@ def verify_token(authorization: str | None) -> None:
 def health() -> dict:
     return {
         "ok": True,
-        "yolo_model": os.getenv("YOLO_MODEL", "yolov8n.pt"),
-        "classifier_model": os.getenv("CLASSIFIER_MODEL", "microsoft/resnet-50"),
-        "classifier_enabled": os.getenv("ENABLE_CLASSIFIER", "false").strip().lower() in {"1", "true", "yes", "on"},
+        "mode": "classifier-only",
+        "classifier_model": "mobilenetv2-7.onnx",
     }
 
 
@@ -52,9 +51,8 @@ def root() -> dict:
 @app.post("/warmup")
 def warmup(authorization: str | None = Header(default=None)) -> dict:
     verify_token(authorization)
-    get_yolo_model()
-    if os.getenv("ENABLE_CLASSIFIER", "false").strip().lower() in {"1", "true", "yes", "on"}:
-        get_classifier()
+    get_classifier_session()
+    get_labels()
     return {"ok": True, "message": "Model weights are loaded."}
 
 
@@ -67,10 +65,7 @@ def identify(payload: IdentifyRequest, authorization: str | None = Header(defaul
         return {
             "ok": True,
             "card": card,
-            "model": (
-                f"YOLO={os.getenv('YOLO_MODEL', 'yolov8n.pt')} + "
-                f"classifier={os.getenv('CLASSIFIER_MODEL', 'microsoft/resnet-50') if os.getenv('ENABLE_CLASSIFIER', 'false').strip().lower() in {'1', 'true', 'yes', 'on'} else 'disabled'}"
-            ),
+            "model": "classifier=mobilenetv2-7.onnx",
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

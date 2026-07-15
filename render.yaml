@@ -6,18 +6,10 @@ services:
     plan: starter
     healthCheckPath: /health
     envVars:
-      - key: YOLO_MODEL
-        value: yolov8n.pt
-      - key: CLASSIFIER_MODEL
-        value: microsoft/resnet-50
-      - key: ENABLE_CLASSIFIER
-        value: "false"
-      - key: MODEL_DEVICE
-        value: "-1"
-      - key: YOLO_CONFIDENCE
-        value: "0.25"
       - key: CLASSIFIER_TOP_K
         value: "5"
+      - key: ONNX_THREADS
+        value: "1"
       - key: ALLOWED_ORIGINS
         sync: false
       - key: VISION_BACKEND_TOKEN

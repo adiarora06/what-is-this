@@ -2,112 +2,96 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from pathlib import Path
 
+import numpy as np
+import requests
 from PIL import Image
 
-from .image_utils import crop_bbox
 from .knowledge import build_card, normalize_label
 
+MODEL_URL = "https://github.com/onnx/models/raw/main/validated/vision/classification/mobilenet/model/mobilenetv2-7.onnx"
+LABELS_URL = "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_classes.txt"
 
-def _env_enabled(name: str, default: str = "false") -> bool:
-    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+def _cache_dir() -> Path:
+    path = Path(os.getenv("MODEL_CACHE_DIR", "/tmp/what-is-this-models"))
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
-def _center_weight(bbox: list[float]) -> float:
-    x, y, width, height = bbox
-    cx = x + width / 2
-    cy = y + height / 2
-    distance = ((cx - 0.5) ** 2 + (cy - 0.5) ** 2) ** 0.5
-    area = width * height
-    return area * 1.8 + max(0.0, 0.8 - distance)
+def _download_file(url: str, path: Path) -> None:
+    if path.exists() and path.stat().st_size > 1024:
+        return
+
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+    path.write_bytes(response.content)
+
+
+def _softmax(values: np.ndarray) -> np.ndarray:
+    shifted = values - np.max(values)
+    exp = np.exp(shifted)
+    return exp / np.sum(exp)
 
 
 @lru_cache(maxsize=1)
-def get_yolo_model():
-    from ultralytics import YOLO
+def get_classifier_session():
+    import onnxruntime as ort
 
-    return YOLO(os.getenv("YOLO_MODEL", "yolov8n.pt"))
+    model_path = _cache_dir() / "mobilenetv2-7.onnx"
+    _download_file(os.getenv("ONNX_MODEL_URL", MODEL_URL), model_path)
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = int(os.getenv("ONNX_THREADS", "1"))
+    options.inter_op_num_threads = int(os.getenv("ONNX_THREADS", "1"))
+    return ort.InferenceSession(str(model_path), sess_options=options, providers=["CPUExecutionProvider"])
 
 
 @lru_cache(maxsize=1)
-def get_classifier():
-    from transformers import pipeline
+def get_labels() -> list[str]:
+    labels_path = _cache_dir() / "imagenet_classes.txt"
+    _download_file(os.getenv("IMAGENET_LABELS_URL", LABELS_URL), labels_path)
+    labels = [normalize_label(line) for line in labels_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(labels) < 1000:
+        raise RuntimeError("ImageNet labels file did not contain the expected classes.")
+    return labels
 
-    model_name = os.getenv("CLASSIFIER_MODEL", "microsoft/resnet-50")
-    device = int(os.getenv("MODEL_DEVICE", "-1"))
-    return pipeline("image-classification", model=model_name, device=device)
 
+def _preprocess(image: Image.Image) -> np.ndarray:
+    image = image.convert("RGB")
+    image.thumbnail((256, 256))
+    canvas = Image.new("RGB", (256, 256), (0, 0, 0))
+    canvas.paste(image, ((256 - image.width) // 2, (256 - image.height) // 2))
+    left = (256 - 224) // 2
+    image = canvas.crop((left, left, left + 224, left + 224))
 
-def detect_primary_object(image: Image.Image) -> tuple[Image.Image, list[dict], str | None, float]:
-    result = get_yolo_model()(image, verbose=False)[0]
-    detections: list[dict] = []
-    names = result.names
-
-    for box in result.boxes:
-        confidence = float(box.conf[0])
-        if confidence < float(os.getenv("YOLO_CONFIDENCE", "0.25")):
-            continue
-
-        cls_id = int(box.cls[0])
-        label = normalize_label(str(names.get(cls_id, cls_id)))
-        x1, y1, x2, y2 = [float(value) for value in box.xyxy[0]]
-        image_width, image_height = image.size
-        bbox = [
-            max(0.0, min(1.0, x1 / image_width)),
-            max(0.0, min(1.0, y1 / image_height)),
-            max(0.01, min(1.0, (x2 - x1) / image_width)),
-            max(0.01, min(1.0, (y2 - y1) / image_height)),
-        ]
-        detections.append(
-            {
-                "label": label,
-                "confidence": round(confidence, 4),
-                "bbox": [round(value, 4) for value in bbox],
-                "score": _center_weight(bbox) * max(0.2, confidence),
-            }
-        )
-
-    if not detections:
-        return image, [], None, 0.0
-
-    primary = sorted(detections, key=lambda item: item["score"], reverse=True)[0]
-    crop = crop_bbox(image, primary["bbox"])
-    public_detections = [{key: value for key, value in item.items() if key != "score"} for item in detections]
-    return crop, public_detections, primary["label"], primary["confidence"]
+    array = np.asarray(image).astype("float32") / 255.0
+    mean = np.array([0.485, 0.456, 0.406], dtype="float32")
+    std = np.array([0.229, 0.224, 0.225], dtype="float32")
+    array = (array - mean) / std
+    return np.transpose(array, (2, 0, 1))[None, ...]
 
 
 def classify(image: Image.Image) -> list[dict]:
-    if not _env_enabled("ENABLE_CLASSIFIER"):
-        return []
-
-    raw_results = get_classifier()(image, top_k=int(os.getenv("CLASSIFIER_TOP_K", "5")))
-    return [{"label": normalize_label(str(item["label"])), "score": float(item["score"])} for item in raw_results]
+    session = get_classifier_session()
+    labels = get_labels()
+    input_name = session.get_inputs()[0].name
+    output = session.run(None, {input_name: _preprocess(image)})[0]
+    scores = _softmax(np.asarray(output).reshape(-1))
+    top_k = min(int(os.getenv("CLASSIFIER_TOP_K", "5")), len(scores))
+    indices = np.argsort(scores)[-top_k:][::-1]
+    return [{"label": labels[int(index)], "score": float(scores[int(index)])} for index in indices]
 
 
 def identify_image(image: Image.Image) -> dict:
-    crop, detections, detector_label, detector_confidence = detect_primary_object(image)
-    classifications = classify(crop)
-    classifier_top = classifications[0] if classifications else {"label": detector_label or "object", "score": detector_confidence}
-    classifier_label = classifier_top["label"]
-    classifier_confidence = float(classifier_top["score"])
-
-    if detector_label and detector_label in classifier_label:
-        label = classifier_label
-        confidence = max(detector_confidence, classifier_confidence)
-    elif detector_label and detector_confidence >= classifier_confidence + 0.12:
-        label = detector_label
-        confidence = detector_confidence
-    else:
-        label = classifier_label
-        confidence = classifier_confidence
-
-    visual_clues = []
-    if detector_label:
-        visual_clues.append(f"Detector located a primary {detector_label} in the frame.")
-    if classifications:
-        visual_clues.extend(f"Classifier candidate: {item['label']} ({round(item['score'] * 100)}%)." for item in classifications[:3])
-    else:
-        visual_clues.append("Running in low-memory detector-only mode.")
+    classifications = classify(image)
+    top = classifications[0] if classifications else {"label": "object", "score": 0.0}
+    label = top["label"]
+    confidence = float(top["score"])
+    visual_clues = [
+        "Classifier-only mode is active for low-memory hosting.",
+        f"Top ImageNet match: {label} ({round(confidence * 100)}%).",
+    ]
     alternatives = [{"label": item["label"], "confidence": round(float(item["score"]), 4), "source": "classifier"} for item in classifications[:5]]
 
-    return build_card(label=label, confidence=confidence, visual_clues=visual_clues, detections=detections, alternatives=alternatives)
+    return build_card(label=label, confidence=confidence, visual_clues=visual_clues, detections=[], alternatives=alternatives)
