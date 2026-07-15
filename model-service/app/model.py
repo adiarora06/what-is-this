@@ -22,14 +22,14 @@ def _center_weight(bbox: list[float]) -> float:
 def get_yolo_model():
     from ultralytics import YOLO
 
-    return YOLO(os.getenv("YOLO_MODEL", "yolov8x.pt"))
+    return YOLO(os.getenv("YOLO_MODEL", "yolov8n.pt"))
 
 
 @lru_cache(maxsize=1)
 def get_classifier():
     from transformers import pipeline
 
-    model_name = os.getenv("CLASSIFIER_MODEL", "facebook/convnext-base-224-22k-1k")
+    model_name = os.getenv("CLASSIFIER_MODEL", "microsoft/resnet-50")
     device = int(os.getenv("MODEL_DEVICE", "-1"))
     return pipeline("image-classification", model=model_name, device=device)
 

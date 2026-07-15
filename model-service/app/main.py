@@ -38,9 +38,14 @@ def verify_token(authorization: str | None) -> None:
 def health() -> dict:
     return {
         "ok": True,
-        "yolo_model": os.getenv("YOLO_MODEL", "yolov8x.pt"),
-        "classifier_model": os.getenv("CLASSIFIER_MODEL", "facebook/convnext-base-224-22k-1k"),
+        "yolo_model": os.getenv("YOLO_MODEL", "yolov8n.pt"),
+        "classifier_model": os.getenv("CLASSIFIER_MODEL", "microsoft/resnet-50"),
     }
+
+
+@app.get("/")
+def root() -> dict:
+    return {"ok": True, "service": "What Is This CV Model Service", "health": "/health"}
 
 
 @app.post("/warmup")
@@ -61,10 +66,9 @@ def identify(payload: IdentifyRequest, authorization: str | None = Header(defaul
             "ok": True,
             "card": card,
             "model": (
-                f"YOLO={os.getenv('YOLO_MODEL', 'yolov8x.pt')} + "
-                f"classifier={os.getenv('CLASSIFIER_MODEL', 'facebook/convnext-base-224-22k-1k')}"
+                f"YOLO={os.getenv('YOLO_MODEL', 'yolov8n.pt')} + "
+                f"classifier={os.getenv('CLASSIFIER_MODEL', 'microsoft/resnet-50')}"
             ),
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-

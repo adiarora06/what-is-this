@@ -7,9 +7,9 @@ services:
     healthCheckPath: /health
     envVars:
       - key: YOLO_MODEL
-        value: yolov8x.pt
+        value: yolov8n.pt
       - key: CLASSIFIER_MODEL
-        value: facebook/convnext-base-224-22k-1k
+        value: microsoft/resnet-50
       - key: MODEL_DEVICE
         value: "-1"
       - key: YOLO_CONFIDENCE
@@ -20,4 +20,3 @@ services:
         sync: false
       - key: VISION_BACKEND_TOKEN
         generateValue: true
-

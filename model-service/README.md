@@ -5,7 +5,7 @@ This backend identifies objects without sending images to GPT.
 It uses:
 
 - YOLO for detection and primary-object cropping.
-- ConvNeXt for trained image classification.
+- A trained image classifier for finer labels.
 - Deterministic metadata generation for about/use/care/purchase fields.
 
 ## Local Run
@@ -26,8 +26,8 @@ curl -X POST http://127.0.0.1:8010/warmup
 ## Environment
 
 ```text
-YOLO_MODEL=yolov8x.pt
-CLASSIFIER_MODEL=facebook/convnext-base-224-22k-1k
+YOLO_MODEL=yolov8n.pt
+CLASSIFIER_MODEL=microsoft/resnet-50
 MODEL_DEVICE=-1
 YOLO_CONFIDENCE=0.25
 CLASSIFIER_TOP_K=5
@@ -36,3 +36,10 @@ VISION_BACKEND_TOKEN=long-random-token
 ```
 
 Set the same `VISION_BACKEND_TOKEN` in Vercel so only your app can call the backend.
+
+For higher accuracy on a larger paid instance, you can switch back to:
+
+```text
+YOLO_MODEL=yolov8x.pt
+CLASSIFIER_MODEL=facebook/convnext-base-224-22k-1k
+```
