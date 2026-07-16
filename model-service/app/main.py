@@ -61,7 +61,7 @@ def identify(payload: IdentifyRequest, authorization: str | None = Header(defaul
     verify_token(authorization)
     try:
         image = image_from_data_url(payload.image)
-        card = identify_image(image)
+        card = identify_image(image, payload.context)
         return {
             "ok": True,
             "card": card,

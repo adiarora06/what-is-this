@@ -8,6 +8,8 @@ services:
     envVars:
       - key: CLASSIFIER_TOP_K
         value: "5"
+      - key: CLASSIFIER_VIEWS
+        value: "3"
       - key: ONNX_THREADS
         value: "1"
       - key: ALLOWED_ORIGINS
