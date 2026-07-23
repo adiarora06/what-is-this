@@ -11,6 +11,19 @@ const CATALOG_KEY = "what-is-this-catalog";
 type ScanState = "idle" | "camera" | "scanning" | "identifying" | "done" | "error";
 type FrameCandidate = { image: string; score: number };
 type BackendHealth = { ok: boolean; label: string; detail?: string };
+type HealthPayload = {
+  ok: boolean;
+  accuracyProvider?: string;
+  geminiConfigured?: boolean;
+  backendConfigured?: boolean;
+  backendError?: string;
+  error?: string;
+  backend?: {
+    mode?: string;
+    yoloModel?: string;
+    classifierModel?: string;
+  };
+};
 type StoryboardBoard = {
   id: string;
   name: string;
@@ -185,20 +198,30 @@ export default function Home() {
     async function checkBackend() {
       try {
         const response = await fetch("/api/health", { cache: "no-store" });
-        const payload = await response.json();
+        const payload = (await response.json()) as HealthPayload;
         if (cancelled) return;
+        const provider = (payload.accuracyProvider || "auto").toLowerCase();
+        const backendDetail = [payload.backend?.mode, payload.backend?.yoloModel, payload.backend?.classifierModel].filter(Boolean).join(" + ");
+        if (payload.geminiConfigured && provider !== "classifier" && provider !== "cv") {
+          setBackendHealth({
+            ok: true,
+            label: "Gemini vision ready",
+            detail: backendDetail ? `Classifier fallback: ${backendDetail}` : payload.backendError,
+          });
+          return;
+        }
         if (!payload.ok) {
-          setBackendHealth({ ok: false, label: "CV backend offline", detail: payload.error });
+          setBackendHealth({ ok: false, label: "Classifier offline", detail: payload.error || payload.backendError });
           return;
         }
         setBackendHealth({
           ok: true,
-          label: "CV backend online",
-          detail: [payload.backend?.yoloModel, payload.backend?.classifierModel].filter(Boolean).join(" + "),
+          label: "Classifier online",
+          detail: backendDetail,
         });
       } catch (error) {
         if (!cancelled) {
-          setBackendHealth({ ok: false, label: "CV backend offline", detail: error instanceof Error ? error.message : undefined });
+          setBackendHealth({ ok: false, label: "Vision status unavailable", detail: error instanceof Error ? error.message : undefined });
         }
       }
     }

@@ -2,12 +2,17 @@ export const runtime = "nodejs";
 
 export async function GET() {
   const backendUrl = process.env.VISION_BACKEND_URL?.replace(/\/$/, "");
+  const accuracyProvider = process.env.ACCURACY_PROVIDER || "auto";
+  const geminiConfigured = Boolean(process.env.GEMINI_API_KEY);
+  const geminiUsable = geminiConfigured && !["classifier", "cv"].includes(accuracyProvider.toLowerCase());
 
   if (!backendUrl) {
     return Response.json({
-      ok: false,
+      ok: geminiUsable,
+      accuracyProvider,
+      geminiConfigured,
       backendConfigured: false,
-      error: "VISION_BACKEND_URL is not configured.",
+      error: geminiUsable ? undefined : "GEMINI_API_KEY or VISION_BACKEND_URL is not configured.",
     });
   }
 
@@ -19,26 +24,36 @@ export async function GET() {
 
     if (!response.ok) {
       return Response.json({
-        ok: false,
+        ok: geminiUsable,
+        accuracyProvider,
+        geminiConfigured,
         backendConfigured: true,
-        error: `Backend health check failed: ${response.status}`,
+        backendError: `Backend health check failed: ${response.status}`,
+        error: geminiUsable ? undefined : `Backend health check failed: ${response.status}`,
       });
     }
 
     const backend = await response.json();
     return Response.json({
       ok: true,
+      accuracyProvider,
+      geminiConfigured,
       backendConfigured: true,
       backend: {
+        mode: backend.mode,
         yoloModel: backend.yolo_model,
         classifierModel: backend.classifier_model,
       },
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Backend health check failed.";
     return Response.json({
-      ok: false,
+      ok: geminiUsable,
+      accuracyProvider,
+      geminiConfigured,
       backendConfigured: true,
-      error: error instanceof Error ? error.message : "Backend health check failed.",
+      backendError: message,
+      error: geminiUsable ? undefined : message,
     });
   }
 }
