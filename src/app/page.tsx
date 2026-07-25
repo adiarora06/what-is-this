@@ -1,12 +1,33 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { purchaseLinksFor } from "@/lib/links";
-import type { CatalogEntry, IdentifyResponse, ObjectCard } from "@/lib/types";
+import {
+  clearCloudBoard,
+  deleteCloudCard,
+  getSupabaseBrowserClient,
+  isCloudConfigured,
+  loadCloudBoards,
+  saveCloudCard,
+  saveCloudFeedback,
+  syncCloudBoards,
+  type CloudUser,
+} from "@/lib/cloud";
+import { purchaseLinksFor, shoppingRecommendedForCategory } from "@/lib/links";
+import type {
+  AccuracyFeedback,
+  CatalogEntry,
+  IdentificationProvider,
+  IdentifyResponse,
+  ObjectCard,
+  StoryboardBoard,
+} from "@/lib/types";
 
 const STORYBOARD_KEY = "what-is-this-storyboard";
 const STORYBOARD_BOARDS_KEY = "what-is-this-storyboard-boards";
 const CATALOG_KEY = "what-is-this-catalog";
+const ACCURACY_FEEDBACK_KEY = "what-is-this-accuracy-feedback";
+const MAX_UPLOAD_FILE_BYTES = 15_000_000;
+const SUPPORTED_UPLOAD_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 type ScanState = "idle" | "camera" | "scanning" | "identifying" | "done" | "error";
 type FrameCandidate = { image: string; score: number };
@@ -15,7 +36,10 @@ type HealthPayload = {
   ok: boolean;
   accuracyProvider?: string;
   geminiConfigured?: boolean;
+  geminiValid?: boolean;
+  geminiError?: string;
   backendConfigured?: boolean;
+  availableProviders?: string[];
   backendError?: string;
   error?: string;
   backend?: {
@@ -24,11 +48,10 @@ type HealthPayload = {
     classifierModel?: string;
   };
 };
-type StoryboardBoard = {
-  id: string;
-  name: string;
-  createdAt: string;
-  items: ObjectCard[];
+type FeedbackChoice = "idle" | "correct" | "incorrect";
+type InstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 };
 
 function nowId() {
@@ -49,7 +72,12 @@ function readStorage<T>(key: string, fallback: T): T {
 }
 
 function writeStorage<T>(key: string, value: T) {
-  localStorage.setItem(key, JSON.stringify(value));
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function defaultStoryboardBoards(): StoryboardBoard[] {
@@ -112,6 +140,38 @@ function captureVideoFrame(video: HTMLVideoElement, canvas: HTMLCanvasElement): 
   return { image: canvas.toDataURL("image/jpeg", 0.82), score: scoreFrame(canvas) };
 }
 
+async function resizeImageDataUrl(image: string, maxDimension: number, quality: number) {
+  if (!image.startsWith("data:image/")) return undefined;
+  return new Promise<string | undefined>((resolve) => {
+    const source = new Image();
+    source.onload = () => {
+      const scale = Math.min(1, maxDimension / Math.max(source.naturalWidth, source.naturalHeight));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(source.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(source.naturalHeight * scale));
+      const context = canvas.getContext("2d");
+      if (!context) return resolve(undefined);
+      context.drawImage(source, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    source.onerror = () => resolve(undefined);
+    source.src = image;
+  });
+}
+
+function makeFeedbackThumbnail(image: string) {
+  return resizeImageDataUrl(image, 360, 0.68);
+}
+
+function fileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("The selected image could not be read."));
+    reader.readAsDataURL(file);
+  });
+}
+
 function labelsForCard(card: Pick<ObjectCard, "objectName" | "shortName" | "category" | "detections">) {
   return Array.from(
     new Set([card.objectName, card.shortName, card.category, ...(card.detections || []).map((item) => item.label)].map(normalizeText).filter(Boolean)),
@@ -122,21 +182,25 @@ function applyCatalogCorrection(card: ObjectCard, catalog: CatalogEntry[]): Obje
   const labels = new Set(labelsForCard(card));
   const match = catalog.find((entry) => entry.matchLabels.some((label) => labels.has(normalizeText(label))));
   if (!match) return card;
+  const category = match.category || card.category;
+  const shoppingRecommended = shoppingRecommendedForCategory(category);
   return {
     ...card,
     correctedFrom: card.objectName,
     objectName: match.objectName,
     shortName: match.objectName,
-    category: match.category || card.category,
+    category,
     about: match.notes || `Saved in your learning catalog as ${match.objectName}.`,
     purchaseQuery: match.objectName,
-    purchaseLinks: purchaseLinksFor(match.objectName),
+    shoppingRecommended,
+    purchaseLinks: shoppingRecommended ? purchaseLinksFor(match.objectName) : [],
     visualClues: [`Matched your learning catalog from backend label "${card.objectName}".`, ...card.visualClues],
   };
 }
 
 function cardFromResponse(response: Extract<IdentifyResponse, { ok: true }>, image: string, catalog: CatalogEntry[]): ObjectCard {
   const purchaseQuery = response.card.purchaseQuery || response.card.objectName;
+  const shoppingRecommended = response.card.shoppingRecommended ?? shoppingRecommendedForCategory(response.card.category);
   return applyCatalogCorrection(
     {
       id: nowId(),
@@ -151,7 +215,12 @@ function cardFromResponse(response: Extract<IdentifyResponse, { ok: true }>, ima
       useCases: response.card.useCases,
       careTips: response.card.careTips,
       purchaseQuery,
-      purchaseLinks: response.card.purchaseLinks?.length ? response.card.purchaseLinks : purchaseLinksFor(purchaseQuery),
+      shoppingRecommended,
+      purchaseLinks: shoppingRecommended
+        ? response.card.purchaseLinks?.length
+          ? response.card.purchaseLinks
+          : purchaseLinksFor(purchaseQuery)
+        : [],
       safetyNote: response.card.safetyNote,
       source: response.card.source,
       detections: response.card.detections,
@@ -166,7 +235,9 @@ export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const storyboardSectionRef = useRef<HTMLElement | null>(null);
+  const resultSectionRef = useRef<HTMLElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const cloudEnabled = isCloudConfigured();
   const [scanState, setScanState] = useState<ScanState>("idle");
   const [holdSeconds, setHoldSeconds] = useState(3);
   const [progress, setProgress] = useState(0);
@@ -182,8 +253,19 @@ export default function Home() {
   const [correctionName, setCorrectionName] = useState("");
   const [correctionCategory, setCorrectionCategory] = useState("");
   const [correctionNotes, setCorrectionNotes] = useState("");
+  const [feedbackChoice, setFeedbackChoice] = useState<FeedbackChoice>("idle");
+  const [accuracyFeedback, setAccuracyFeedback] = useState<AccuracyFeedback[]>([]);
+  const [providerChoice, setProviderChoice] = useState<IdentificationProvider>("auto");
+  const [availableProviders, setAvailableProviders] = useState<IdentificationProvider[]>(["auto"]);
   const [saved, setSaved] = useState(false);
   const [hasShare, setHasShare] = useState(false);
+  const [cloudUser, setCloudUser] = useState<CloudUser | null>(null);
+  const [cloudStatus, setCloudStatus] = useState(cloudEnabled ? "Checking cloud account..." : "Saved on this device");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
+  const [isInstalled, setIsInstalled] = useState(false);
   const [backendHealth, setBackendHealth] = useState<BackendHealth>({ ok: false, label: "Checking CV backend..." });
 
   useEffect(() => {
@@ -193,6 +275,7 @@ export default function Home() {
     setActiveBoardId(savedBoards[0]?.id || "for-later");
     setSelectedBoardId(savedBoards[0]?.id || "for-later");
     setCatalog(readStorage<CatalogEntry[]>(CATALOG_KEY, []));
+    setAccuracyFeedback(readStorage<AccuracyFeedback[]>(ACCURACY_FEEDBACK_KEY, []));
     setHasShare(typeof navigator !== "undefined" && Boolean(navigator.share));
 
     async function checkBackend() {
@@ -200,9 +283,14 @@ export default function Home() {
         const response = await fetch("/api/health", { cache: "no-store" });
         const payload = (await response.json()) as HealthPayload;
         if (cancelled) return;
+        const providerOptions = (payload.availableProviders || ["auto"]).filter(
+          (item): item is IdentificationProvider => item === "auto" || item === "gemini" || item === "classifier",
+        );
+        setAvailableProviders(providerOptions.length ? providerOptions : ["auto"]);
+        setProviderChoice((current) => (providerOptions.includes(current) ? current : "auto"));
         const provider = (payload.accuracyProvider || "auto").toLowerCase();
         const backendDetail = [payload.backend?.mode, payload.backend?.yoloModel, payload.backend?.classifierModel].filter(Boolean).join(" + ");
-        if (payload.geminiConfigured && provider !== "classifier" && provider !== "cv") {
+        if (payload.geminiValid && provider !== "classifier" && provider !== "cv") {
           setBackendHealth({
             ok: true,
             label: "Gemini vision ready",
@@ -211,13 +299,13 @@ export default function Home() {
           return;
         }
         if (!payload.ok) {
-          setBackendHealth({ ok: false, label: "Classifier offline", detail: payload.error || payload.backendError });
+          setBackendHealth({ ok: false, label: "Vision providers offline", detail: payload.error || payload.geminiError || payload.backendError });
           return;
         }
         setBackendHealth({
           ok: true,
           label: "Classifier online",
-          detail: backendDetail,
+          detail: [payload.geminiConfigured && !payload.geminiValid ? payload.geminiError : undefined, backendDetail].filter(Boolean).join(" Classifier: "),
         });
       } catch (error) {
         if (!cancelled) {
@@ -234,6 +322,82 @@ export default function Home() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!cloudEnabled) return;
+    const client = getSupabaseBrowserClient();
+    if (!client) return;
+    let cancelled = false;
+
+    void client.auth.getUser().then(({ data, error }) => {
+      if (cancelled) return;
+      if (error) setCloudStatus("Cloud sign-in is unavailable");
+      setCloudUser(data.user ? { id: data.user.id, email: data.user.email } : null);
+      if (!data.user && !error) setCloudStatus("Sign in to sync storyboards");
+    });
+
+    const { data } = client.auth.onAuthStateChange((_event, session) => {
+      const user = session?.user;
+      setCloudUser(user ? { id: user.id, email: user.email } : null);
+      if (!user) {
+        const localBoards = readStoryboardBoards();
+        setStoryboardBoards(localBoards);
+        setActiveBoardId(localBoards[0]?.id || "for-later");
+        setSelectedBoardId(localBoards[0]?.id || "for-later");
+        setCloudStatus("Sign in to sync storyboards");
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      data.subscription.unsubscribe();
+    };
+  }, [cloudEnabled]);
+
+  useEffect(() => {
+    if (!cloudUser) return;
+    let cancelled = false;
+    setCloudStatus("Loading cloud storyboards...");
+    void loadCloudBoards(cloudUser.id)
+      .then((boards) => {
+        if (cancelled) return;
+        if (boards.length) {
+          setStoryboardBoards(boards);
+          setActiveBoardId(boards[0].id);
+          setSelectedBoardId(boards[0].id);
+          setCloudStatus("Cloud storyboards synced");
+        } else {
+          setCloudStatus("Cloud is ready; sync this device when you are ready");
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) setCloudStatus(error instanceof Error ? error.message : "Cloud sync failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cloudUser]);
+
+  useEffect(() => {
+    setIsInstalled(window.matchMedia("(display-mode: standalone)").matches);
+    const handleInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as InstallPromptEvent);
+    };
+    const handleInstalled = () => {
+      setInstallPrompt(null);
+      setIsInstalled(true);
+    };
+    window.addEventListener("beforeinstallprompt", handleInstallPrompt);
+    window.addEventListener("appinstalled", handleInstalled);
+    if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") {
+      void navigator.serviceWorker.register("/sw.js");
+    }
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleInstallPrompt);
+      window.removeEventListener("appinstalled", handleInstalled);
+    };
+  }, []);
+
   const activeBoard = useMemo(
     () => storyboardBoards.find((board) => board.id === activeBoardId) || storyboardBoards[0],
     [activeBoardId, storyboardBoards],
@@ -243,12 +407,17 @@ export default function Home() {
     [selectedBoardId, storyboardBoards],
   );
   const totalSavedObjects = useMemo(() => storyboardBoards.reduce((sum, board) => sum + board.items.length, 0), [storyboardBoards]);
+  const accuracySummary = useMemo(() => {
+    const correct = accuracyFeedback.filter((item) => item.wasCorrect).length;
+    return { correct, corrected: accuracyFeedback.length - correct, total: accuracyFeedback.length };
+  }, [accuracyFeedback]);
   const canSave = useMemo(() => Boolean(card && !saved), [card, saved]);
   const canCorrect = useMemo(() => Boolean(card && correctionName.trim()), [card, correctionName]);
 
   function persistStoryboardBoards(nextBoards: StoryboardBoard[]) {
+    if (!cloudUser && !writeStorage(STORYBOARD_BOARDS_KEY, nextBoards)) return false;
     setStoryboardBoards(nextBoards);
-    writeStorage(STORYBOARD_BOARDS_KEY, nextBoards);
+    return true;
   }
 
   function createStoryboardBoard(name: string) {
@@ -288,10 +457,11 @@ export default function Home() {
     setScanState("identifying");
     setStatus("Identifying the object...");
     setSaved(false);
+    setFeedbackChoice("idle");
     const response = await fetch("/api/identify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image, context: context.trim() || undefined }),
+      body: JSON.stringify({ image, context: context.trim() || undefined, provider: providerChoice }),
     });
     const payload = (await response.json()) as IdentifyResponse;
     if (!payload.ok) throw new Error(payload.error);
@@ -302,7 +472,7 @@ export default function Home() {
     setCorrectionNotes("");
     setCurrentImage(image);
     setScanState("done");
-    setStatus(`Found: ${nextCard.shortName}`);
+    setStatus(payload.warnings?.length ? `Found: ${nextCard.shortName}. ${payload.warnings.join(" ")}` : `Found: ${nextCard.shortName}`);
   }
 
   async function scanObject() {
@@ -339,24 +509,53 @@ export default function Home() {
     }
   }
 
-  function saveCard() {
+  async function saveCard() {
     if (!card) return;
+    const localImage = cloudUser ? card.image : (await resizeImageDataUrl(card.image, 720, 0.72)) || card.image;
+    const storedCard = { ...card, image: localImage };
     const newBoard = createStoryboardBoard(newBoardName);
     const targetBoardId = newBoard?.id || selectedBoard?.id || "for-later";
     const baseBoards = storyboardBoards.length ? storyboardBoards : defaultStoryboardBoards();
     const workingBoards = newBoard ? [...baseBoards, newBoard] : baseBoards;
     const nextBoards = workingBoards.map((board) =>
       board.id === targetBoardId
-        ? { ...board, items: [card, ...board.items.filter((item) => item.id !== card.id)].slice(0, 80) }
+        ? { ...board, items: [storedCard, ...board.items.filter((item) => item.id !== card.id)].slice(0, 40) }
         : board,
     );
 
-    persistStoryboardBoards(nextBoards);
+    if (!persistStoryboardBoards(nextBoards)) {
+      setSaved(false);
+      setScanState("error");
+      setStatus("Device storage is full. Remove saved objects or enable cloud sync, then try again.");
+      return;
+    }
     setSelectedBoardId(targetBoardId);
     setActiveBoardId(targetBoardId);
     setNewBoardName("");
     setSaved(true);
     setStatus(`Saved to ${newBoard?.name || selectedBoard?.name || "For Later"}.`);
+    if (cloudUser) {
+      const targetBoard = nextBoards.find((board) => board.id === targetBoardId);
+      if (!targetBoard) return;
+      setCloudStatus("Saving image to cloud...");
+      try {
+        const storagePath = await saveCloudCard(cloudUser.id, targetBoard, card);
+        const cloudCard = { ...card, storagePath };
+        setCard(cloudCard);
+        setStoryboardBoards((current) =>
+          current.map((board) =>
+            board.id === targetBoardId
+              ? { ...board, items: board.items.map((item) => (item.id === card.id ? cloudCard : item)) }
+              : board,
+          ),
+        );
+        setCloudStatus("Cloud storyboards synced");
+        setStatus(`Saved to ${targetBoard.name} on all your signed-in devices.`);
+      } catch (error) {
+        setCloudStatus(error instanceof Error ? error.message : "Cloud save failed");
+        setStatus("Saved in this session, but cloud sync failed.");
+      }
+    }
   }
 
   function showSelectedStoryboard() {
@@ -364,26 +563,90 @@ export default function Home() {
     window.setTimeout(() => storyboardSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   }
 
-  function removeStoryboardItem(boardId: string, itemId: string) {
-    persistStoryboardBoards(
+  async function removeStoryboardItem(boardId: string, itemId: string) {
+    const item = storyboardBoards.find((board) => board.id === boardId)?.items.find((entry) => entry.id === itemId);
+    const persisted = persistStoryboardBoards(
       storyboardBoards.map((board) =>
         board.id === boardId ? { ...board, items: board.items.filter((item) => item.id !== itemId) } : board,
       ),
     );
+    if (!persisted) {
+      setStatus("Could not update device storage.");
+      return;
+    }
+    if (cloudUser && item) {
+      try {
+        await deleteCloudCard(cloudUser.id, boardId, item);
+        setCloudStatus("Cloud storyboards synced");
+      } catch (error) {
+        setCloudStatus(error instanceof Error ? error.message : "Cloud delete failed");
+      }
+    }
   }
 
-  function clearActiveBoard() {
+  async function clearActiveBoard() {
     if (!activeBoard) return;
-    persistStoryboardBoards(
+    if (!window.confirm(`Clear all ${activeBoard.items.length} objects from ${activeBoard.name}?`)) return;
+    const persisted = persistStoryboardBoards(
       storyboardBoards.map((board) => (board.id === activeBoard.id ? { ...board, items: [] } : board)),
     );
+    if (!persisted) {
+      setStatus("Could not update device storage.");
+      return;
+    }
+    if (cloudUser) {
+      try {
+        await clearCloudBoard(cloudUser.id, activeBoard);
+        setCloudStatus("Cloud storyboards synced");
+      } catch (error) {
+        setCloudStatus(error instanceof Error ? error.message : "Cloud clear failed");
+      }
+    }
   }
 
-  function saveCorrection() {
+  async function recordAccuracyFeedback(sourceCard: ObjectCard, wasCorrect: boolean, correctedName?: string) {
+    const feedback: AccuracyFeedback = {
+      id: sourceCard.id,
+      createdAt: new Date().toISOString(),
+      predictedName: sourceCard.correctedFrom || sourceCard.objectName,
+      correctedName: correctedName || undefined,
+      category: sourceCard.category,
+      confidence: sourceCard.confidence,
+      source: sourceCard.source || providerChoice,
+      wasCorrect,
+      image: await makeFeedbackThumbnail(sourceCard.image),
+      storagePath: sourceCard.storagePath,
+    };
+    const nextFeedback = [feedback, ...accuracyFeedback.filter((item) => item.id !== feedback.id)].slice(0, 60);
+    setAccuracyFeedback(nextFeedback);
+    if (!writeStorage(ACCURACY_FEEDBACK_KEY, nextFeedback)) {
+      const compact = nextFeedback.map(({ image: _image, ...item }) => item);
+      setAccuracyFeedback(compact);
+      writeStorage(ACCURACY_FEEDBACK_KEY, compact);
+    }
+    if (cloudUser) {
+      try {
+        await saveCloudFeedback(cloudUser.id, sourceCard, feedback);
+        setCloudStatus("Feedback added to your cloud accuracy set");
+      } catch (error) {
+        setCloudStatus(error instanceof Error ? error.message : "Cloud feedback save failed");
+      }
+    }
+  }
+
+  async function confirmResult() {
+    if (!card) return;
+    setFeedbackChoice("correct");
+    await recordAccuracyFeedback(card, true);
+    setStatus(`Confirmed: ${card.objectName}`);
+  }
+
+  async function saveCorrection() {
     if (!card || !correctionName.trim()) return;
     const correctedName = correctionName.trim();
     const correctedCategory = correctionCategory.trim() || card.category;
     const now = new Date().toISOString();
+    const catalogImage = (await resizeImageDataUrl(card.image, 480, 0.7)) || undefined;
     const entry: CatalogEntry = {
       id: nowId(),
       createdAt: now,
@@ -392,12 +655,18 @@ export default function Home() {
       category: correctedCategory,
       notes: correctionNotes.trim(),
       matchLabels: Array.from(new Set([...labelsForCard(card), normalizeText(correctedName)])).filter(Boolean),
-      image: card.image,
+      image: catalogImage,
     };
     const nextCatalog = [entry, ...catalog.filter((item) => item.objectName !== correctedName)].slice(0, 150);
+    if (!writeStorage(CATALOG_KEY, nextCatalog)) {
+      setScanState("error");
+      setStatus("Device storage is full. Remove saved corrections and try again.");
+      return;
+    }
     setCatalog(nextCatalog);
-    writeStorage(CATALOG_KEY, nextCatalog);
-    setCard({
+    await recordAccuracyFeedback(card, false, correctedName);
+    const shoppingRecommended = shoppingRecommendedForCategory(correctedCategory);
+    const correctedCard: ObjectCard = {
       ...card,
       correctedFrom: card.correctedFrom || card.objectName,
       objectName: correctedName,
@@ -405,9 +674,30 @@ export default function Home() {
       category: correctedCategory,
       about: correctionNotes.trim() || card.about,
       purchaseQuery: correctedName,
-      purchaseLinks: purchaseLinksFor(correctedName),
+      shoppingRecommended,
+      purchaseLinks: shoppingRecommended ? purchaseLinksFor(correctedName) : [],
       visualClues: [`Saved to your learning catalog as ${correctedName}.`, ...card.visualClues],
-    });
+    };
+    setCard(correctedCard);
+    setFeedbackChoice("correct");
+    const affectedBoards = storyboardBoards.filter((board) => board.items.some((item) => item.id === card.id));
+    if (affectedBoards.length) {
+      const persisted = persistStoryboardBoards(
+        storyboardBoards.map((board) => ({
+          ...board,
+          items: board.items.map((item) => (item.id === card.id ? correctedCard : item)),
+        })),
+      );
+      if (!persisted) setStatus("Correction saved, but device storage could not update the storyboard.");
+      if (cloudUser) {
+        try {
+          for (const board of affectedBoards) await saveCloudCard(cloudUser.id, board, correctedCard);
+          setCloudStatus("Corrected object synced to cloud");
+        } catch (error) {
+          setCloudStatus(error instanceof Error ? error.message : "Cloud correction sync failed");
+        }
+      }
+    }
     setStatus(`Saved correction: ${correctedName}`);
   }
 
@@ -423,24 +713,108 @@ export default function Home() {
     URL.revokeObjectURL(url);
   }
 
-  async function shareCard() {
-    if (!card || !navigator.share) return;
-    await navigator.share({ title: card.objectName, text: `${card.objectName}: ${card.about}`, url: card.purchaseLinks[0]?.url });
+  function exportAccuracySet() {
+    const blob = new Blob(
+      [JSON.stringify({ exportedAt: new Date().toISOString(), summary: accuracySummary, entries: accuracyFeedback }, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "what-is-this-accuracy-set.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
-  function loadUploadedImage(file: File) {
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const image = String(reader.result || "");
-      try {
-        setCurrentImage(image);
-        await identify(image);
-      } catch (error) {
-        setScanState("error");
-        setStatus(error instanceof Error ? error.message : "Identification failed.");
+  async function authenticate(mode: "sign-in" | "sign-up") {
+    const client = getSupabaseBrowserClient();
+    if (!client || !authEmail.trim() || authPassword.length < 6) return;
+    setAuthBusy(true);
+    setCloudStatus(mode === "sign-in" ? "Signing in..." : "Creating account...");
+    try {
+      const result =
+        mode === "sign-in"
+          ? await client.auth.signInWithPassword({ email: authEmail.trim(), password: authPassword })
+          : await client.auth.signUp({
+              email: authEmail.trim(),
+              password: authPassword,
+              options: { emailRedirectTo: window.location.origin },
+            });
+      if (result.error) throw result.error;
+      setAuthPassword("");
+      setCloudStatus(result.data.session ? "Cloud account connected" : "Check your email to confirm your account");
+    } catch (error) {
+      setCloudStatus(error instanceof Error ? error.message : "Cloud sign-in failed");
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function signOut() {
+    const client = getSupabaseBrowserClient();
+    if (!client) return;
+    await client.auth.signOut();
+  }
+
+  async function syncThisDevice() {
+    if (!cloudUser) return;
+    const localBoards = readStoryboardBoards();
+    setCloudStatus("Syncing saved objects...");
+    try {
+      await syncCloudBoards(cloudUser.id, localBoards, (done, total) => setCloudStatus(`Syncing ${done} of ${total} objects...`));
+      const boards = await loadCloudBoards(cloudUser.id);
+      if (boards.length) {
+        setStoryboardBoards(boards);
+        setActiveBoardId(boards[0].id);
+        setSelectedBoardId(boards[0].id);
       }
-    };
-    reader.readAsDataURL(file);
+      setCloudStatus("Cloud storyboards synced");
+    } catch (error) {
+      setCloudStatus(error instanceof Error ? error.message : "Cloud sync failed");
+    }
+  }
+
+  async function installApp() {
+    if (!installPrompt) return;
+    await installPrompt.prompt();
+    const choice = await installPrompt.userChoice;
+    if (choice.outcome === "accepted") setInstallPrompt(null);
+  }
+
+  function openStoryboardItem(item: ObjectCard) {
+    setCard(item);
+    setCurrentImage(item.image);
+    setCorrectionName(item.objectName);
+    setCorrectionCategory(item.category);
+    setCorrectionNotes("");
+    setFeedbackChoice("idle");
+    setScanState("done");
+    setStatus(`Opened: ${item.objectName}`);
+    window.setTimeout(() => resultSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  }
+
+  async function shareCard() {
+    if (!card || !navigator.share) return;
+    const url = card.purchaseLinks[0]?.url;
+    await navigator.share({ title: card.objectName, text: `${card.objectName}: ${card.about}`, ...(url ? { url } : {}) });
+  }
+
+  async function loadUploadedImage(file: File) {
+    try {
+      if (!SUPPORTED_UPLOAD_TYPES.has(file.type)) throw new Error("Choose a JPEG, PNG, or WebP image.");
+      if (file.size > MAX_UPLOAD_FILE_BYTES) throw new Error("Choose an image smaller than 15 MB.");
+      setScanState("identifying");
+      setStatus("Preparing the image...");
+      const original = await fileAsDataUrl(file);
+      let image = await resizeImageDataUrl(original, 1600, 0.82);
+      if (!image) throw new Error("The selected image could not be prepared.");
+      if (image.length > 3_900_000) image = (await resizeImageDataUrl(original, 1280, 0.7)) || image;
+      setCurrentImage(image);
+      await identify(image);
+    } catch (error) {
+      setScanState("error");
+      setStatus(error instanceof Error ? error.message : "Identification failed.");
+    }
   }
 
   return (
@@ -455,7 +829,29 @@ export default function Home() {
             {backendHealth.label}
           </div>
           <div className={`statusPill ${scanState === "error" ? "error" : ""}`}>{status}</div>
+          {installPrompt && !isInstalled && <button className="secondaryButton installButton" onClick={installApp}>Install on this phone</button>}
         </div>
+      </section>
+
+      <section className="accountPanel">
+        <div>
+          <p className="eyebrow">Your Storyboards</p>
+          <h3>{cloudUser ? cloudUser.email || "Cloud account" : cloudEnabled ? "Sync across devices" : "Saved on this device"}</h3>
+          <span>{cloudStatus}</span>
+        </div>
+        {cloudUser ? (
+          <div className="accountActions">
+            <button className="secondaryButton" onClick={syncThisDevice}>Sync this device</button>
+            <button className="textButton" onClick={signOut}>Sign out</button>
+          </div>
+        ) : cloudEnabled ? (
+          <div className="authFields">
+            <input type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="Email" />
+            <input type="password" minLength={6} autoComplete="current-password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="Password (6+ characters)" />
+            <button className="primaryButton" disabled={authBusy || !authEmail.trim() || authPassword.length < 6} onClick={() => authenticate("sign-in")}>Sign in</button>
+            <button className="secondaryButton" disabled={authBusy || !authEmail.trim() || authPassword.length < 6} onClick={() => authenticate("sign-up")}>Create account</button>
+          </div>
+        ) : null}
       </section>
 
       <section className="cameraPanel">
@@ -471,31 +867,41 @@ export default function Home() {
           {currentImage && <img className="capturePreview" src={currentImage} alt="Last captured object" />}
         </div>
         <canvas ref={canvasRef} hidden />
-        <div className="controls">
-          <button className="primaryButton" onClick={startCamera}>{streamRef.current ? "Restart Camera" : "Start Camera"}</button>
-          <button className="scanButton" onClick={scanObject} disabled={scanState === "scanning" || scanState === "identifying"}>
-            {scanState === "scanning" ? "Scanning..." : scanState === "identifying" ? "Thinking..." : "Scan Object"}
-          </button>
-          <button className="secondaryButton" onClick={() => fileInputRef.current?.click()}>Upload</button>
-          <input ref={fileInputRef} hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) loadUploadedImage(file);
-            event.currentTarget.value = "";
-          }} />
+        <div className="cameraSidebar">
+          <div className="controls">
+            <button className="primaryButton" onClick={startCamera}>{streamRef.current ? "Restart Camera" : "Start Camera"}</button>
+            <button className="scanButton" onClick={scanObject} disabled={scanState === "scanning" || scanState === "identifying"}>
+              {scanState === "scanning" ? "Scanning..." : scanState === "identifying" ? "Thinking..." : "Scan Object"}
+            </button>
+            <button className="secondaryButton" onClick={() => fileInputRef.current?.click()}>Upload</button>
+            <input ref={fileInputRef} hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void loadUploadedImage(file);
+              event.currentTarget.value = "";
+            }} />
+          </div>
+          <label className="rangeField">
+            <span>Hold duration <b>{holdSeconds}s</b></span>
+            <input type="range" min="2" max="5" step="1" value={holdSeconds} onChange={(event) => setHoldSeconds(Number(event.target.value))} />
+          </label>
+          <div className="progressTrack" aria-hidden="true"><div style={{ width: `${Math.round(progress * 100)}%` }} /></div>
+          <label className="contextBox">
+            <span>Optional context</span>
+            <textarea value={context} onChange={(event) => setContext(event.target.value)} placeholder="Example: identify exact model if visible." />
+          </label>
+          <label className="providerField">
+            <span>Vision engine</span>
+            <select value={providerChoice} onChange={(event) => setProviderChoice(event.target.value as IdentificationProvider)}>
+              {availableProviders.includes("auto") && <option value="auto">Best available</option>}
+              {availableProviders.includes("gemini") && <option value="gemini">Gemini vision</option>}
+              {availableProviders.includes("classifier") && <option value="classifier">Free classifier</option>}
+            </select>
+          </label>
         </div>
-        <label className="rangeField">
-          <span>Hold duration <b>{holdSeconds}s</b></span>
-          <input type="range" min="2" max="5" step="1" value={holdSeconds} onChange={(event) => setHoldSeconds(Number(event.target.value))} />
-        </label>
-        <div className="progressTrack" aria-hidden="true"><div style={{ width: `${Math.round(progress * 100)}%` }} /></div>
-        <label className="contextBox">
-          <span>Optional context</span>
-          <textarea value={context} onChange={(event) => setContext(event.target.value)} placeholder="Example: identify exact model if visible." />
-        </label>
       </section>
 
       {card && (
-        <section className="resultPanel">
+        <section className="resultPanel" ref={resultSectionRef}>
           <div className="resultHeader">
             <img src={card.image} alt={card.objectName} />
             <div>
@@ -513,14 +919,29 @@ export default function Home() {
           <InfoList title="Use cases" items={card.useCases} />
           <InfoList title="Care tips" items={card.careTips} />
           {card.safetyNote && <p className="safetyNote">{card.safetyNote}</p>}
-          <section className="correctionPanel">
-            <div><p className="eyebrow">Teach It</p><h3>Correct this result</h3></div>
-            <label><span>Correct object name</span><input value={correctionName} onChange={(event) => setCorrectionName(event.target.value)} /></label>
-            <label><span>Category</span><input value={correctionCategory} onChange={(event) => setCorrectionCategory(event.target.value)} /></label>
-            <label><span>Notes for future cards</span><textarea value={correctionNotes} onChange={(event) => setCorrectionNotes(event.target.value)} placeholder="Example: This is my Logitech MX Master 3S mouse." /></label>
-            <button className="primaryButton" onClick={saveCorrection} disabled={!canCorrect}>Save Correction To Catalog</button>
+          <section className={`verificationPanel ${feedbackChoice === "correct" ? "confirmed" : ""}`}>
+            <div><p className="eyebrow">Accuracy Check</p><h3>{feedbackChoice === "correct" ? "Result recorded" : "Is this identification right?"}</h3></div>
+            {feedbackChoice !== "correct" && (
+              <div className="verificationActions">
+                <button className="primaryButton" onClick={confirmResult}>Yes, correct</button>
+                <button className="secondaryButton" onClick={() => setFeedbackChoice("incorrect")}>Not quite</button>
+              </div>
+            )}
           </section>
-          <div className="linkGrid">{card.purchaseLinks.map((link) => <a key={link.label} href={link.url} target="_blank" rel="noreferrer">{link.label}</a>)}</div>
+          {feedbackChoice === "incorrect" && (
+            <section className="correctionPanel">
+              <div><p className="eyebrow">Teach It</p><h3>Correct this result</h3></div>
+              <label><span>Correct object name</span><input value={correctionName} onChange={(event) => setCorrectionName(event.target.value)} /></label>
+              <label><span>Category</span><input value={correctionCategory} onChange={(event) => setCorrectionCategory(event.target.value)} /></label>
+              <label><span>Notes for future cards</span><textarea value={correctionNotes} onChange={(event) => setCorrectionNotes(event.target.value)} placeholder="Example: This is my Logitech MX Master 3S mouse." /></label>
+              <button className="primaryButton" onClick={saveCorrection} disabled={!canCorrect}>Save Correct Label</button>
+            </section>
+          )}
+          {card.purchaseLinks.length > 0 ? (
+            <div className="linkGrid">{card.purchaseLinks.map((link) => <a key={link.label} href={link.url} target="_blank" rel="noreferrer">{link.label}</a>)}</div>
+          ) : (
+            <p className="shoppingNote">Shopping links are only shown for ordinary consumer products.</p>
+          )}
           <section className="savePanel">
             <div>
               <p className="eyebrow">Save For Later</p>
@@ -546,6 +967,31 @@ export default function Home() {
           </div>
         </section>
       )}
+
+      <section className="accuracyPanel">
+        <div className="sectionTitle">
+          <div><p className="eyebrow">Accuracy Lab</p><h2>Labeled Results</h2></div>
+          {accuracyFeedback.length > 0 && <button className="textButton" onClick={exportAccuracySet}>Export Test Set</button>}
+        </div>
+        <div className="accuracyStats">
+          <div><strong>{accuracySummary.total}</strong><span>reviewed</span></div>
+          <div><strong>{accuracySummary.correct}</strong><span>correct</span></div>
+          <div><strong>{accuracySummary.corrected}</strong><span>corrected</span></div>
+        </div>
+        {accuracyFeedback.length === 0 ? (
+          <div className="emptyState">Confirm or correct scan results to start a reusable accuracy test set.</div>
+        ) : (
+          <div className="feedbackList">
+            {accuracyFeedback.slice(0, 6).map((item) => (
+              <div key={item.id}>
+                <span className={item.wasCorrect ? "feedbackMark correct" : "feedbackMark"}>{item.wasCorrect ? "Correct" : "Corrected"}</span>
+                <strong>{item.correctedName || item.predictedName}</strong>
+                <small>{item.source} - {Math.round(item.confidence * 100)}%</small>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       <section className="catalogPanel">
         <div className="sectionTitle">
@@ -584,10 +1030,13 @@ export default function Home() {
         ) : activeBoard && (
           <div className="storyboardGrid">{activeBoard.items.map((item) => (
             <article className="storyItem" key={item.id}>
-              <img src={item.image} alt={item.objectName} />
+              {item.image ? <img src={item.image} alt={item.objectName} /> : <div className="imagePlaceholder">No image</div>}
               <div><strong>{item.shortName}</strong><span>{new Date(item.createdAt).toLocaleString()}</span></div>
-              <a href={item.purchaseLinks[0]?.url} target="_blank" rel="noreferrer">Shop</a>
-              <button onClick={() => removeStoryboardItem(activeBoard.id, item.id)}>Remove</button>
+              <div className="storyActions">
+                <button onClick={() => openStoryboardItem(item)}>View</button>
+                {item.purchaseLinks[0]?.url && <a href={item.purchaseLinks[0].url} target="_blank" rel="noreferrer">Shop</a>}
+                <button onClick={() => removeStoryboardItem(activeBoard.id, item.id)}>Remove</button>
+              </div>
             </article>
           ))}</div>
         )}

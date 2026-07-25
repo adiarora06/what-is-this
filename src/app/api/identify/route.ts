@@ -1,12 +1,25 @@
 import OpenAI from "openai";
 import { z } from "zod";
-import { purchaseLinksFor } from "@/lib/links";
+import { purchaseLinksFor, shoppingRecommendedForCategory } from "@/lib/links";
+import {
+  MAX_REQUEST_BYTES,
+  parseImageDataUrl,
+  providerSequence,
+  publicProviderError,
+  type ServerVisionProvider,
+} from "@/lib/vision-policy";
 
 export const runtime = "nodejs";
+export const maxDuration = 30;
+
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_REQUESTS = 20;
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 const requestSchema = z.object({
-  image: z.string().startsWith("data:image/"),
+  image: z.string().max(MAX_REQUEST_BYTES).startsWith("data:image/"),
   context: z.string().max(500).optional(),
+  provider: z.enum(["auto", "gemini", "classifier"]).optional(),
 });
 
 const resultSchema = z.object({
@@ -20,6 +33,7 @@ const resultSchema = z.object({
   careTips: z.array(z.string()).default([]),
   purchaseQuery: z.string().min(1),
   purchaseLinks: z.array(z.object({ label: z.string(), url: z.string().url() })).default([]),
+  shoppingRecommended: z.boolean().optional(),
   safetyNote: z.string().nullish(),
   source: z.string().optional(),
   detections: z.array(z.object({ label: z.string(), confidence: z.number(), bbox: z.array(z.number()) })).default([]),
@@ -35,7 +49,7 @@ type ResultPayload = z.infer<typeof resultSchema>;
 
 function getOpenAIClient() {
   if (!openaiClient) {
-    openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 20_000, maxRetries: 1 });
   }
   return openaiClient;
 }
@@ -49,28 +63,59 @@ function jsonFromText(text: string) {
   return JSON.parse(cleaned);
 }
 
-function imagePartsFromDataUrl(image: string) {
-  const match = image.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
-  if (!match) throw new Error("Image must be a base64 data URL.");
-  return { mimeType: match[1], data: match[2] };
-}
-
 function withPurchaseLinks(data: ResultPayload, source: string) {
+  const shoppingRecommended = data.shoppingRecommended ?? shoppingRecommendedForCategory(data.category);
   return {
     ...data,
+    shoppingRecommended,
     source: data.source || source,
     safetyNote: data.safetyNote || undefined,
-    purchaseLinks: data.purchaseLinks.length ? data.purchaseLinks : purchaseLinksFor(data.purchaseQuery),
+    purchaseLinks: shoppingRecommended
+      ? data.purchaseLinks.length
+        ? data.purchaseLinks
+        : purchaseLinksFor(data.purchaseQuery)
+      : [],
   };
 }
 
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Identification failed.";
+function clientKey(request: Request) {
+  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || "unknown";
+}
+
+function takeRateLimit(request: Request) {
+  const now = Date.now();
+  const key = clientKey(request);
+  const current = rateBuckets.get(key);
+  const bucket = !current || current.resetAt <= now ? { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS } : current;
+  bucket.count += 1;
+  rateBuckets.set(key, bucket);
+
+  if (rateBuckets.size > 2_000) {
+    for (const [storedKey, entry] of rateBuckets) {
+      if (entry.resetAt <= now) rateBuckets.delete(storedKey);
+    }
+  }
+
+  return {
+    allowed: bucket.count <= RATE_LIMIT_REQUESTS,
+    remaining: Math.max(0, RATE_LIMIT_REQUESTS - bucket.count),
+    retryAfter: Math.max(1, Math.ceil((bucket.resetAt - now) / 1_000)),
+  };
+}
+
+function responseHeaders(requestId: string, remaining: number, provider?: string) {
+  return {
+    "Cache-Control": "no-store",
+    "X-Request-Id": requestId,
+    "X-RateLimit-Limit": String(RATE_LIMIT_REQUESTS),
+    "X-RateLimit-Remaining": String(remaining),
+    ...(provider ? { "X-Vision-Provider": provider } : {}),
+  };
 }
 
 async function identifyWithVisionBackend(parsed: RequestPayload) {
   const backendUrl = process.env.VISION_BACKEND_URL?.replace(/\/$/, "");
-  if (!backendUrl) return null;
+  if (!backendUrl) throw new Error("VISION_BACKEND_URL is not configured.");
 
   const response = await fetch(`${backendUrl}/identify`, {
     method: "POST",
@@ -78,21 +123,14 @@ async function identifyWithVisionBackend(parsed: RequestPayload) {
       "Content-Type": "application/json",
       ...(process.env.VISION_BACKEND_TOKEN ? { Authorization: `Bearer ${process.env.VISION_BACKEND_TOKEN}` } : {}),
     },
-    body: JSON.stringify(parsed),
+    body: JSON.stringify({ image: parsed.image, context: parsed.context }),
+    signal: AbortSignal.timeout(15_000),
   });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Vision backend failed: ${text || response.statusText}`);
-  }
-
+  if (!response.ok) throw new Error(`Vision backend returned ${response.status}.`);
   const payload = await response.json();
   const data = resultSchema.parse(payload.card);
-  return {
-    ok: true,
-    model: payload.model || "cv-backend",
-    card: withPurchaseLinks(data, "cv-backend"),
-  };
+  return { model: payload.model || "cv-backend", card: withPurchaseLinks(data, "cv-backend") };
 }
 
 async function identifyWithGemini(parsed: RequestPayload) {
@@ -100,17 +138,17 @@ async function identifyWithGemini(parsed: RequestPayload) {
   if (!apiKey) throw new Error("GEMINI_API_KEY is not configured.");
 
   const model = (process.env.GEMINI_MODEL || "gemini-2.5-flash").replace(/^models\//, "");
-  const image = imagePartsFromDataUrl(parsed.image);
+  const image = parseImageDataUrl(parsed.image);
   const prompt = [
-    "Identify the single main object in this photo.",
-    "Return JSON only with these keys: objectName, shortName, confidence, category, about, visualClues, useCases, careTips, purchaseQuery, safetyNote, alternatives.",
-    "objectName should be the most specific name supported by visible evidence. Include brand/model only when it is visible or strongly indicated.",
-    "If the exact product cannot be known, use the best plain-language object name and lower the confidence.",
-    "Do not invent a brand, price, store, serial number, or medical/safety claim.",
-    "confidence must be a number from 0 to 1.",
-    "about should be a friendly 2-3 sentence 'about me' written as the object introducing itself.",
+    "Identify the single main subject in this photo.",
+    "Return JSON only with these keys: objectName, shortName, confidence, category, about, visualClues, useCases, careTips, purchaseQuery, shoppingRecommended, safetyNote, alternatives.",
+    "objectName should be the most specific name supported by visible evidence. Include brand/model only when visible or strongly indicated.",
+    "If the exact item cannot be known, use the best plain-language name and lower confidence. confidence must be from 0 to 1.",
+    "Do not invent a brand, price, store, serial number, medical claim, or safety claim.",
+    "about should be a factual, friendly 2-3 sentence introduction appropriate to the subject type.",
     "visualClues should cite visible evidence. useCases and careTips should be practical short strings.",
-    "purchaseQuery should be a concise shopping/search query, not a URL.",
+    "shoppingRecommended must be false for people, animals, plants, places, unidentified subjects, and anything unsafe or inappropriate to shop for.",
+    "purchaseQuery should be a concise product search only when shoppingRecommended is true; otherwise use the object name.",
     parsed.context ? `User context: ${parsed.context}` : "",
   ]
     .filter(Boolean)
@@ -120,22 +158,15 @@ async function identifyWithGemini(parsed: RequestPayload) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: prompt }, { inlineData: image }],
-        },
-      ],
-      generationConfig: {
-        responseMimeType: "application/json",
-        temperature: 0.1,
-      },
+      contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: image.mimeType, data: image.data } }] }],
+      generationConfig: { responseMimeType: "application/json", temperature: 0.1 },
     }),
+    signal: AbortSignal.timeout(20_000),
   });
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Gemini vision failed: ${text || response.statusText}`);
+    const payload = (await response.json().catch(() => null)) as { error?: { message?: string; status?: string } } | null;
+    throw new Error(payload?.error?.message || payload?.error?.status || `Gemini returned ${response.status}.`);
   }
 
   const payload = (await response.json()) as {
@@ -146,21 +177,15 @@ async function identifyWithGemini(parsed: RequestPayload) {
   if (!text) throw new Error(payload.error?.message || "Gemini returned no object description.");
 
   const data = resultSchema.parse(jsonFromText(text));
-  return {
-    ok: true,
-    model,
-    card: withPurchaseLinks(data, "gemini-vision"),
-  };
+  return { model, card: withPurchaseLinks(data, "gemini-vision") };
 }
 
 async function identifyWithOpenAI(parsed: RequestPayload) {
   const model = process.env.OPENAI_MODEL || "gpt-5.6-luna";
   const prompt = [
-    "Identify the single main object in this photo.",
-    "Return JSON only with these keys: objectName, shortName, confidence, category, about, visualClues, useCases, careTips, purchaseQuery, safetyNote.",
-    "objectName should be as specific as visual evidence allows.",
-    "about should be a friendly 2-3 sentence 'about me' written as the object introducing itself.",
-    "purchaseQuery should be a concise shopping/search query, not a URL.",
+    "Identify the single main subject in this photo.",
+    "Return JSON only with these keys: objectName, shortName, confidence, category, about, visualClues, useCases, careTips, purchaseQuery, shoppingRecommended, safetyNote.",
+    "Only set shoppingRecommended true for an ordinary consumer product. Never recommend shopping for people, animals, plants, or places.",
     parsed.context ? `User context: ${parsed.context}` : "",
   ]
     .filter(Boolean)
@@ -168,74 +193,84 @@ async function identifyWithOpenAI(parsed: RequestPayload) {
 
   const response = await getOpenAIClient().responses.create({
     model,
-    input: [
-      {
-        role: "user",
-        content: [
-          { type: "input_text", text: prompt },
-          { type: "input_image", image_url: parsed.image, detail: "high" },
-        ],
-      },
-    ],
+    input: [{ role: "user", content: [{ type: "input_text", text: prompt }, { type: "input_image", image_url: parsed.image, detail: "high" }] }],
   });
-
   const data = resultSchema.parse(jsonFromText(response.output_text || "{}"));
-  return {
-    ok: true,
-    model,
-    card: withPurchaseLinks(data, "openai-fallback"),
-  };
+  return { model, card: withPurchaseLinks(data, "openai-fallback") };
+}
+
+async function runProvider(provider: ServerVisionProvider, parsed: RequestPayload) {
+  if (provider === "gemini") return identifyWithGemini(parsed);
+  if (provider === "classifier") return identifyWithVisionBackend(parsed);
+  return identifyWithOpenAI(parsed);
 }
 
 export async function POST(request: Request) {
+  const requestId = crypto.randomUUID();
+  const startedAt = Date.now();
+  const rateLimit = takeRateLimit(request);
+  const baseHeaders = responseHeaders(requestId, rateLimit.remaining);
+  if (!rateLimit.allowed) {
+    return Response.json(
+      { ok: false, error: "Too many scans. Wait a moment and try again.", requestId },
+      { status: 429, headers: { ...baseHeaders, "Retry-After": String(rateLimit.retryAfter) } },
+    );
+  }
+
+  const contentLength = Number(request.headers.get("content-length") || 0);
+  if (contentLength > MAX_REQUEST_BYTES) {
+    return Response.json({ ok: false, error: "Image request is too large.", requestId }, { status: 413, headers: baseHeaders });
+  }
+
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
-    return Response.json({ ok: false, error: "Send a valid data URL image." }, { status: 400 });
+    return Response.json({ ok: false, error: "Send a JPEG, PNG, or WebP image under 3 MB.", requestId }, { status: 400, headers: baseHeaders });
   }
 
-  const provider = (process.env.ACCURACY_PROVIDER || "auto").toLowerCase();
-  const errors: string[] = [];
-  const shouldTryGemini = provider === "auto" || provider === "gemini" || provider === "gemini-only";
-  const shouldTryClassifier = provider !== "gemini-only" && provider !== "openai";
-  const shouldTryOpenAI = provider === "openai" || process.env.ALLOW_OPENAI_FALLBACK === "true";
-
-  if (shouldTryGemini) {
-    if (process.env.GEMINI_API_KEY) {
-      try {
-        return Response.json(await identifyWithGemini(parsed.data));
-      } catch (error) {
-        errors.push(errorMessage(error));
-        if (provider === "gemini-only") {
-          return Response.json({ ok: false, error: errors.join(" ") }, { status: 500 });
-        }
-      }
-    } else if (provider === "gemini" || provider === "gemini-only") {
-      errors.push("GEMINI_API_KEY is not configured.");
-    }
+  try {
+    parseImageDataUrl(parsed.data.image);
+  } catch (error) {
+    return Response.json(
+      { ok: false, error: error instanceof Error ? error.message : "Invalid image.", requestId },
+      { status: 400, headers: baseHeaders },
+    );
   }
 
-  if (shouldTryClassifier) {
+  const configuredProvider = (parsed.data.provider || process.env.ACCURACY_PROVIDER || "auto").toLowerCase();
+  const requestedProvider = configuredProvider === "cv" ? "classifier" : configuredProvider;
+  const providers = providerSequence(requestedProvider, {
+    gemini: Boolean(process.env.GEMINI_API_KEY),
+    classifier: Boolean(process.env.VISION_BACKEND_URL),
+    openai: Boolean(process.env.OPENAI_API_KEY),
+    allowOpenAIFallback: process.env.ALLOW_OPENAI_FALLBACK === "true",
+  });
+
+  if (!providers.length) {
+    const error = requestedProvider === "gemini" ? "Gemini is not configured." : "No requested vision provider is configured.";
+    return Response.json({ ok: false, error, requestId }, { status: 503, headers: baseHeaders });
+  }
+
+  const warnings: string[] = [];
+  for (const provider of providers) {
     try {
-      const backendResult = await identifyWithVisionBackend(parsed.data);
-      if (backendResult) return Response.json(backendResult);
+      const result = await runProvider(provider, parsed.data);
+      console.info(JSON.stringify({ event: "vision.identify.success", requestId, provider, model: result.model, durationMs: Date.now() - startedAt }));
+      return Response.json(
+        { ok: true, provider, model: result.model, card: result.card, warnings, requestId },
+        { headers: responseHeaders(requestId, rateLimit.remaining, provider) },
+      );
     } catch (error) {
-      errors.push(errorMessage(error));
-    }
-  }
-
-  if (shouldTryOpenAI) {
-    if (process.env.OPENAI_API_KEY) {
-      try {
-        return Response.json(await identifyWithOpenAI(parsed.data));
-      } catch (error) {
-        errors.push(errorMessage(error));
+      const publicError = publicProviderError(provider, error);
+      warnings.push(publicError);
+      console.warn(JSON.stringify({ event: "vision.identify.failure", requestId, provider, error: publicError, durationMs: Date.now() - startedAt }));
+      if (requestedProvider !== "auto") {
+        return Response.json({ ok: false, error: publicError, requestId }, { status: 502, headers: baseHeaders });
       }
-    } else if (provider === "openai") {
-      errors.push("OPENAI_API_KEY is not configured.");
     }
   }
 
-  const help =
-    "Set GEMINI_API_KEY for high-accuracy vision, set VISION_BACKEND_URL for the lightweight classifier, or set ALLOW_OPENAI_FALLBACK=true with OPENAI_API_KEY.";
-  return Response.json({ ok: false, error: errors.length ? `${errors.join(" ")} ${help}` : help }, { status: 500 });
+  return Response.json(
+    { ok: false, error: warnings.join(" ") || "No vision provider could identify this image.", requestId },
+    { status: 502, headers: baseHeaders },
+  );
 }

@@ -191,12 +191,15 @@ def classify(image: Image.Image, context: str | None = None) -> tuple[list[dict]
 
     top_k = min(int(os.getenv("CLASSIFIER_TOP_K", "5")), len(scores))
     indices = np.argsort(scores)[-top_k:][::-1]
-    return [{"label": labels[int(index)], "score": float(scores[int(index)])} for index in indices], len(views), used_context
+    return [
+        {"label": labels[int(index)], "score": float(scores[int(index)]), "index": int(index)}
+        for index in indices
+    ], len(views), used_context
 
 
 def identify_image(image: Image.Image, context: str | None = None) -> dict:
     classifications, view_count, used_context = classify(image, context)
-    top = classifications[0] if classifications else {"label": "object", "score": 0.0}
+    top = classifications[0] if classifications else {"label": "object", "score": 0.0, "index": -1}
     label = top["label"]
     confidence = float(top["score"])
     visual_clues = [
@@ -208,4 +211,11 @@ def identify_image(image: Image.Image, context: str | None = None) -> dict:
 
     alternatives = [{"label": item["label"], "confidence": round(float(item["score"]), 4), "source": "classifier"} for item in classifications[:5]]
 
-    return build_card(label=label, confidence=confidence, visual_clues=visual_clues, detections=[], alternatives=alternatives)
+    return build_card(
+        label=label,
+        confidence=confidence,
+        visual_clues=visual_clues,
+        detections=[],
+        alternatives=alternatives,
+        class_index=int(top["index"]),
+    )

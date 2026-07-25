@@ -3,6 +3,8 @@ export type PurchaseLink = {
   url: string;
 };
 
+export type IdentificationProvider = "auto" | "gemini" | "classifier";
+
 export type ObjectCard = {
   id: string;
   createdAt: string;
@@ -17,11 +19,33 @@ export type ObjectCard = {
   careTips: string[];
   purchaseQuery: string;
   purchaseLinks: PurchaseLink[];
+  shoppingRecommended: boolean;
   safetyNote?: string;
   source?: string;
+  storagePath?: string;
   correctedFrom?: string;
   detections?: Array<{ label: string; confidence: number; bbox: number[] }>;
   alternatives?: Array<{ label: string; confidence: number; source?: string }>;
+};
+
+export type StoryboardBoard = {
+  id: string;
+  name: string;
+  createdAt: string;
+  items: ObjectCard[];
+};
+
+export type AccuracyFeedback = {
+  id: string;
+  createdAt: string;
+  predictedName: string;
+  correctedName?: string;
+  category: string;
+  confidence: number;
+  source: string;
+  wasCorrect: boolean;
+  image?: string;
+  storagePath?: string;
 };
 
 export type CatalogEntry = {
@@ -42,9 +66,12 @@ export type IdentifyResponse =
         purchaseLinks?: PurchaseLink[];
       };
       model: string;
+      provider: string;
+      warnings?: string[];
+      requestId?: string;
     }
   | {
       ok: false;
       error: string;
+      requestId?: string;
     };
-

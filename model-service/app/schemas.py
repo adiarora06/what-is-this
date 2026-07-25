@@ -36,6 +36,7 @@ class IdentifyCard(BaseModel):
     careTips: list[str]
     purchaseQuery: str
     purchaseLinks: list[PurchaseLink] = []
+    shoppingRecommended: bool = True
     safetyNote: str | None = None
     detections: list[DetectionResult] = []
     alternatives: list[AlternativeResult] = []
@@ -46,4 +47,3 @@ class IdentifyResponse(BaseModel):
     ok: bool
     card: IdentifyCard
     model: str
-

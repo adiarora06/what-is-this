@@ -62,7 +62,7 @@ a {
   color: var(--accent);
   font-size: 12px;
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   margin: 0 0 6px;
   text-transform: uppercase;
 }
@@ -76,13 +76,13 @@ p {
 
 h1 {
   font-size: clamp(30px, 8vw, 48px);
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
   line-height: 0.94;
 }
 
 h2 {
   font-size: 26px;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   line-height: 1;
 }
 
@@ -124,6 +124,8 @@ h3 {
 
 .cameraPanel,
 .resultPanel,
+.accountPanel,
+.accuracyPanel,
 .catalogPanel,
 .storyboardPanel {
   background: var(--card);
@@ -133,12 +135,51 @@ h3 {
   padding: 12px;
 }
 
+.accountPanel {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+}
+
+.accountPanel > div:first-child {
+  min-width: 0;
+}
+
+.accountPanel > div:first-child > span {
+  color: var(--muted);
+  display: block;
+  font-size: 13px;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+
+.accountActions,
+.authFields {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.authFields input {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.installButton {
+  width: 100%;
+}
+
 .cameraStage {
   aspect-ratio: 3 / 4;
   background: #111510;
   border-radius: 8px;
   overflow: hidden;
   position: relative;
+}
+
+.cameraSidebar {
+  display: grid;
+  gap: 12px;
 }
 
 .cameraStage video,
@@ -250,12 +291,17 @@ button:disabled {
 }
 
 .rangeField,
-.contextBox {
+.contextBox,
+.providerField {
   color: var(--muted);
   display: grid;
   gap: 8px;
   font-size: 14px;
   margin-top: 12px;
+}
+
+.providerField {
+  margin-top: 0;
 }
 
 .rangeField span {
@@ -357,7 +403,8 @@ textarea:focus {
 .infoList,
 .emptyState,
 .correctionPanel,
-.savePanel {
+.savePanel,
+.verificationPanel {
   background: #f8f8f4;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -390,9 +437,21 @@ textarea:focus {
 }
 
 .correctionPanel,
-.savePanel {
+.savePanel,
+.verificationPanel {
   display: grid;
   gap: 10px;
+}
+
+.verificationPanel.confirmed {
+  background: #edf8f1;
+  border-color: #c9e8d4;
+}
+
+.verificationActions {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1fr;
 }
 
 .correctionPanel label,
@@ -406,13 +465,80 @@ textarea:focus {
 .linkGrid {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.accuracyStats {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, 1fr);
+  margin-bottom: 12px;
+}
+
+.accuracyStats div {
+  background: #f1f3ed;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.accuracyStats strong,
+.accuracyStats span {
+  display: block;
+}
+
+.accuracyStats strong {
+  font-size: 24px;
+}
+
+.accuracyStats span {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.feedbackList {
+  display: grid;
+  gap: 8px;
+}
+
+.feedbackList > div {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 4px 8px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding-top: 8px;
+}
+
+.feedbackList small {
+  color: var(--muted);
+}
+
+.feedbackMark {
+  background: #f8e6e1;
+  border-radius: 999px;
+  color: var(--warning);
+  font-size: 11px;
+  font-weight: 800;
+  padding: 5px 8px;
+}
+
+.feedbackMark.correct {
+  background: #dceee9;
+  color: var(--accent-strong);
 }
 
 .linkGrid a {
   background: var(--accent-soft);
   color: var(--accent-strong);
   font-size: 14px;
+}
+
+.shoppingNote {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
 }
 
 .stickyControls {
@@ -490,8 +616,24 @@ textarea:focus {
   padding: 8px 10px;
 }
 
-.storyItem button {
-  grid-column: 2 / 4;
+.storyActions {
+  display: grid;
+  gap: 6px;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.imagePlaceholder {
+  align-items: center;
+  aspect-ratio: 1;
+  background: #eceee7;
+  border-radius: 8px;
+  color: var(--muted);
+  display: flex;
+  font-size: 11px;
+  justify-content: center;
+  text-align: center;
+  width: 64px;
 }
 
 @media (min-width: 760px) {
@@ -503,20 +645,26 @@ textarea:focus {
     grid-template-columns: minmax(0, 1fr) 360px;
   }
 
+  .accountPanel {
+    grid-template-columns: minmax(0, 1fr) minmax(360px, 0.8fr);
+  }
+
   .cameraPanel {
+    align-items: start;
     display: grid;
     gap: 12px;
     grid-template-columns: minmax(0, 1fr) 360px;
   }
 
   .cameraStage {
-    grid-row: span 5;
+    aspect-ratio: 4 / 3;
   }
 
   .controls,
   .rangeField,
   .progressTrack,
-  .contextBox {
+  .contextBox,
+  .providerField {
     margin-top: 0;
   }
 }
