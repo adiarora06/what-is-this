@@ -24,7 +24,10 @@ async function checkGemini(): Promise<GeminiHealth> {
 
   let value: GeminiHealth;
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}?key=${apiKey}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:countTokens?key=${apiKey}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "vision health check" }] }] }),
       cache: "no-store",
       signal: AbortSignal.timeout(3_000),
     });
