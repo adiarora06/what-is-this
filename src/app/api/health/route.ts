@@ -12,7 +12,7 @@ type BackendHealth = {
 };
 
 let geminiCache: { key: string; checkedAt: number; value: GeminiHealth } | null = null;
-const GEMINI_CACHE_MS = 5 * 60_000;
+const GEMINI_CACHE_MS = 10 * 60_000;
 
 async function checkGemini(): Promise<GeminiHealth> {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -24,10 +24,13 @@ async function checkGemini(): Promise<GeminiHealth> {
 
   let value: GeminiHealth;
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:countTokens?key=${apiKey}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "vision health check" }] }] }),
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: "Reply with OK." }] }],
+        generationConfig: { temperature: 0, maxOutputTokens: 8 },
+      }),
       cache: "no-store",
       signal: AbortSignal.timeout(3_000),
     });
