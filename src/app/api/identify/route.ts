@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { z } from "zod";
 import { purchaseLinksFor, shoppingRecommendedForCategory } from "@/lib/links";
+import { verifyTurnstile } from "@/lib/turnstile";
 import {
   MAX_REQUEST_BYTES,
   parseImageDataUrl,
@@ -16,29 +17,52 @@ const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_REQUESTS = 20;
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
+class RequestTooLargeError extends Error {}
+
 const requestSchema = z.object({
   image: z.string().max(MAX_REQUEST_BYTES).startsWith("data:image/"),
   context: z.string().max(500).optional(),
   provider: z.enum(["auto", "gemini", "classifier"]).optional(),
+  turnstileToken: z.string().max(2_048).optional(),
 });
 
+const shortText = z.string().trim().min(1).max(240);
+const httpsUrl = z.string().max(2_048).refine((value) => {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}, "Only valid HTTPS links are allowed.");
 const resultSchema = z.object({
-  objectName: z.string().min(1),
-  shortName: z.string().min(1),
+  objectName: z.string().trim().min(1).max(160),
+  shortName: z.string().trim().min(1).max(100),
   confidence: z.number().min(0).max(1),
-  category: z.string().min(1),
-  about: z.string().min(1),
-  visualClues: z.array(z.string()).default([]),
-  useCases: z.array(z.string()).default([]),
-  careTips: z.array(z.string()).default([]),
-  purchaseQuery: z.string().min(1),
-  purchaseLinks: z.array(z.object({ label: z.string(), url: z.string().url() })).default([]),
+  category: z.string().trim().min(1).max(100),
+  about: z.string().trim().min(1).max(1_500),
+  visualClues: z.array(shortText).max(8).default([]),
+  useCases: z.array(shortText).max(8).default([]),
+  careTips: z.array(shortText).max(8).default([]),
+  purchaseQuery: z.string().trim().min(1).max(240),
+  purchaseLinks: z
+    .array(
+      z.object({
+        label: z.string().trim().min(1).max(80),
+        url: httpsUrl,
+      }),
+    )
+    .max(8)
+    .default([]),
   shoppingRecommended: z.boolean().optional(),
-  safetyNote: z.string().nullish(),
-  source: z.string().optional(),
-  detections: z.array(z.object({ label: z.string(), confidence: z.number(), bbox: z.array(z.number()) })).default([]),
+  safetyNote: z.string().trim().max(800).nullish(),
+  source: z.string().trim().max(100).optional(),
+  detections: z
+    .array(z.object({ label: z.string().trim().min(1).max(160), confidence: z.number().min(0).max(1), bbox: z.array(z.number()).length(4) }))
+    .max(12)
+    .default([]),
   alternatives: z
-    .array(z.object({ label: z.string(), confidence: z.number(), source: z.string().optional() }))
+    .array(z.object({ label: z.string().trim().min(1).max(160), confidence: z.number().min(0).max(1), source: z.string().trim().max(100).optional() }))
+    .max(8)
     .default([]),
 });
 
@@ -70,16 +94,44 @@ function withPurchaseLinks(data: ResultPayload, source: string) {
     shoppingRecommended,
     source: data.source || source,
     safetyNote: data.safetyNote || undefined,
-    purchaseLinks: shoppingRecommended
-      ? data.purchaseLinks.length
-        ? data.purchaseLinks
-        : purchaseLinksFor(data.purchaseQuery)
-      : [],
+    // Provider output is untrusted. Generate links only for the curated store list.
+    purchaseLinks: shoppingRecommended ? purchaseLinksFor(data.purchaseQuery) : [],
   };
 }
 
+async function readRequestJson(request: Request) {
+  if (!request.body) return null;
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    byteLength += value.byteLength;
+    if (byteLength > MAX_REQUEST_BYTES) {
+      await reader.cancel();
+      throw new RequestTooLargeError();
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
 function clientKey(request: Request) {
-  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || "unknown";
+  return (
+    request.headers.get("x-vercel-forwarded-for")?.split(",")[0]?.trim() ||
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    request.headers.get("x-real-ip") ||
+    "unknown"
+  );
 }
 
 function takeRateLimit(request: Request) {
@@ -116,12 +168,14 @@ function responseHeaders(requestId: string, remaining: number, provider?: string
 async function identifyWithVisionBackend(parsed: RequestPayload) {
   const backendUrl = process.env.VISION_BACKEND_URL?.replace(/\/$/, "");
   if (!backendUrl) throw new Error("VISION_BACKEND_URL is not configured.");
+  const backendToken = process.env.VISION_BACKEND_TOKEN?.trim();
+  if (!backendToken || backendToken.length < 24) throw new Error("VISION_BACKEND_TOKEN is not securely configured.");
 
   const response = await fetch(`${backendUrl}/identify`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      ...(process.env.VISION_BACKEND_TOKEN ? { Authorization: `Bearer ${process.env.VISION_BACKEND_TOKEN}` } : {}),
+      Authorization: `Bearer ${backendToken}`,
     },
     body: JSON.stringify({ image: parsed.image, context: parsed.context }),
     signal: AbortSignal.timeout(15_000),
@@ -222,7 +276,18 @@ export async function POST(request: Request) {
     return Response.json({ ok: false, error: "Image request is too large.", requestId }, { status: 413, headers: baseHeaders });
   }
 
-  const parsed = requestSchema.safeParse(await request.json().catch(() => null));
+  let requestBody: unknown;
+  try {
+    requestBody = await readRequestJson(request);
+  } catch (error) {
+    const tooLarge = error instanceof RequestTooLargeError;
+    return Response.json(
+      { ok: false, error: tooLarge ? "Image request is too large." : "Request body must be valid JSON.", requestId },
+      { status: tooLarge ? 413 : 400, headers: baseHeaders },
+    );
+  }
+
+  const parsed = requestSchema.safeParse(requestBody);
   if (!parsed.success) {
     return Response.json({ ok: false, error: "Send a JPEG, PNG, or WebP image under 3 MB.", requestId }, { status: 400, headers: baseHeaders });
   }
@@ -236,11 +301,19 @@ export async function POST(request: Request) {
     );
   }
 
+  const turnstile = await verifyTurnstile(parsed.data.turnstileToken, clientKey(request), requestId);
+  if (!turnstile.ok) {
+    return Response.json(
+      { ok: false, error: turnstile.error, requestId },
+      { status: turnstile.status, headers: baseHeaders },
+    );
+  }
+
   const configuredProvider = (parsed.data.provider || process.env.ACCURACY_PROVIDER || "auto").toLowerCase();
   const requestedProvider = configuredProvider === "cv" ? "classifier" : configuredProvider;
   const providers = providerSequence(requestedProvider, {
     gemini: Boolean(process.env.GEMINI_API_KEY),
-    classifier: Boolean(process.env.VISION_BACKEND_URL),
+    classifier: Boolean(process.env.VISION_BACKEND_URL && (process.env.VISION_BACKEND_TOKEN?.trim().length || 0) >= 24),
     openai: Boolean(process.env.OPENAI_API_KEY),
     allowOpenAIFallback: process.env.ALLOW_OPENAI_FALLBACK === "true",
   });

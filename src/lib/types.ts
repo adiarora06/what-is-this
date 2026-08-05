@@ -3,7 +3,7 @@ export type PurchaseLink = {
   url: string;
 };
 
-export type IdentificationProvider = "auto" | "gemini" | "classifier";
+export type IdentificationProvider = "auto" | "device" | "gemini" | "classifier";
 
 export type ObjectCard = {
   id: string;
@@ -20,12 +20,29 @@ export type ObjectCard = {
   purchaseQuery: string;
   purchaseLinks: PurchaseLink[];
   shoppingRecommended: boolean;
+  verified?: boolean;
   safetyNote?: string;
   source?: string;
   storagePath?: string;
   correctedFrom?: string;
   detections?: Array<{ label: string; confidence: number; bbox: number[] }>;
   alternatives?: Array<{ label: string; confidence: number; source?: string }>;
+  barcode?: string;
+  recognizedText?: string[];
+  tags?: string[];
+  favorite?: boolean;
+  visualSignature?: number[];
+  learnedCorrection?: {
+    catalogEntryId: string;
+    originalObjectName: string;
+    originalShortName: string;
+    originalCategory: string;
+    originalAbout: string;
+    originalPurchaseQuery: string;
+    originalPurchaseLinks: PurchaseLink[];
+    originalShoppingRecommended: boolean;
+    originalVisualClues: string[];
+  };
 };
 
 export type StoryboardBoard = {
@@ -56,6 +73,8 @@ export type CatalogEntry = {
   category: string;
   notes: string;
   matchLabels: string[];
+  fingerprint?: string;
+  visualSignature?: number[];
   image?: string;
 };
 

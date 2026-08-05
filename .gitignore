@@ -11,3 +11,5 @@ model-service/.venv
 model-service/yolov*.pt
 model-service/runs
 .vercel
+public/ort
+test-results/

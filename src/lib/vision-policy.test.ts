@@ -16,13 +16,18 @@ describe("providerSequence", () => {
 
 describe("parseImageDataUrl", () => {
   it("accepts supported images and reports decoded bytes", () => {
-    expect(parseImageDataUrl("data:image/jpeg;base64,YWJj")).toEqual({ mimeType: "image/jpeg", data: "YWJj", byteLength: 3 });
+    const data = Buffer.from([0xff, 0xd8, 0xff, 0x00]).toString("base64");
+    expect(parseImageDataUrl(`data:image/jpeg;base64,${data}`)).toEqual({ mimeType: "image/jpeg", data, byteLength: 4 });
   });
 
   it("rejects unsupported and oversized images", () => {
-    expect(() => parseImageDataUrl("data:image/gif;base64,YWJj")).toThrow("JPEG, PNG, or WebP");
-    const oversized = "A".repeat(Math.ceil(((MAX_IMAGE_BYTES + 1) * 4) / 3));
+    expect(() => parseImageDataUrl("data:image/gif;base64,R0lGODlh")).toThrow("JPEG, PNG, or WebP");
+    const oversized = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(MAX_IMAGE_BYTES)]).toString("base64");
     expect(() => parseImageDataUrl(`data:image/jpeg;base64,${oversized}`)).toThrow("under 3 MB");
+  });
+
+  it("rejects a supported MIME type with mismatched content", () => {
+    expect(() => parseImageDataUrl("data:image/jpeg;base64,iVBORw0KGgo=")).toThrow("does not match");
   });
 });
 

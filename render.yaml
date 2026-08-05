@@ -3,7 +3,7 @@ services:
     name: what-is-this-model-service
     runtime: docker
     rootDir: model-service
-    plan: starter
+    plan: free
     healthCheckPath: /health
     envVars:
       - key: CLASSIFIER_TOP_K
@@ -15,4 +15,4 @@ services:
       - key: ALLOWED_ORIGINS
         sync: false
       - key: VISION_BACKEND_TOKEN
-        generateValue: true
+        sync: false

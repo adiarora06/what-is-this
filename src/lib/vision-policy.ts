@@ -11,6 +11,15 @@ export type ProviderAvailability = {
   allowOpenAIFallback: boolean;
 };
 
+function hasExpectedSignature(mimeType: string, data: string) {
+  const bytes = Buffer.from(data.slice(0, 24), "base64");
+  if (mimeType === "image/jpeg") return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  if (mimeType === "image/png") {
+    return bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  }
+  return bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP";
+}
+
 export function providerSequence(requested: string, availability: ProviderAvailability): ServerVisionProvider[] {
   if (requested === "gemini") return availability.gemini ? ["gemini"] : [];
   if (requested === "classifier") return availability.classifier ? ["classifier"] : [];
@@ -37,6 +46,9 @@ export function parseImageDataUrl(image: string) {
   const byteLength = Math.floor((data.length * 3) / 4) - padding;
   if (byteLength <= 0 || byteLength > MAX_IMAGE_BYTES) {
     throw new Error("Image is too large. Use an image under 3 MB.");
+  }
+  if (!hasExpectedSignature(mimeType, data)) {
+    throw new Error("Image content does not match its declared file type.");
   }
 
   return { mimeType, data, byteLength };
