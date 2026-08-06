@@ -32,6 +32,7 @@ h2 { font-size: 19px; letter-spacing: -0.02em; line-height: 1.15; }
 h3 { font-size: 15px; }
 
 .appShell {
+  align-content: start;
   display: grid;
   gap: 14px;
   margin: 0 auto;
@@ -57,7 +58,7 @@ h3 { font-size: 15px; }
 }
 .globalStatus.error { background: #f8e6e1; border-color: #e7b8ad; color: var(--warning); }
 
-.viewStack { display: grid; gap: 16px; }
+.viewStack { align-content: start; display: grid; gap: 16px; }
 .viewIntro { display: grid; gap: 10px; padding: 18px 4px 2px; }
 .viewIntro.compact { padding-bottom: 6px; }
 .viewIntro > p:last-child { color: var(--muted); font-size: 16px; line-height: 1.5; max-width: 560px; }
@@ -262,6 +263,18 @@ input[type="range"] { accent-color: var(--accent); min-height: 28px; padding: 0;
   .linkGrid { grid-template-columns: repeat(3,1fr); }
 }
 
+@media (min-width: 768px) and (max-width: 1023px) {
+  .appShell {
+    max-width: 960px;
+    padding-left: 28px;
+    padding-right: 28px;
+  }
+  .cameraPanel, .resultPanel, .storyboardPanel, .settingsPanel { padding: 16px; }
+  .cameraPanel { gap: 18px; grid-template-columns: minmax(0,1.35fr) minmax(280px,.65fr); }
+  .cameraSidebar { align-content: start; }
+  .viewIntro { max-width: 720px; }
+}
+
 @media (max-width: 619px) and (max-height: 850px) {
   .viewIntro { gap: 7px; padding-top: 8px; }
   .viewIntro > p:last-child { font-size: 15px; line-height: 1.4; }
@@ -281,6 +294,103 @@ input[type="range"] { accent-color: var(--accent); min-height: 28px; padding: 0;
 @media (min-width: 620px) and (max-height: 500px) {
   .appShell { padding-bottom: 18px; }
   .appNav { bottom: auto; left: auto; position: sticky; transform: none; width: min(520px, 100%); }
+}
+
+@media (min-width: 1024px) {
+  html { scroll-padding-bottom: 24px; }
+  h1 { font-size: clamp(48px, 5vw, 60px); }
+  .appShell {
+    column-gap: 30px;
+    grid-template-columns: 190px minmax(0,1fr);
+    grid-template-rows: auto minmax(0,1fr);
+    max-width: 1280px;
+    padding: 28px 32px 48px;
+    row-gap: 20px;
+  }
+  .topBar {
+    grid-column: 1;
+    grid-row: 1;
+    min-height: 48px;
+    position: sticky;
+    top: 28px;
+  }
+  .wordmark { font-size: 17px; }
+  .globalStatus {
+    align-self: center;
+    font-size: 14px;
+    grid-column: 2;
+    grid-row: 1;
+    min-height: 48px;
+    padding: 13px 15px;
+  }
+  .viewStack {
+    grid-column: 2;
+    grid-row: 2;
+    min-width: 0;
+  }
+  .viewIntro {
+    gap: 12px;
+    max-width: 760px;
+    padding: 14px 4px 8px;
+  }
+  .viewIntro > p:last-child { font-size: 17px; max-width: 680px; }
+  .appNav {
+    align-self: start;
+    bottom: auto;
+    box-shadow: 0 12px 30px rgba(27,31,26,.12);
+    display: flex;
+    flex-direction: column;
+    grid-column: 1;
+    grid-row: 2;
+    left: auto;
+    max-width: none;
+    position: sticky;
+    top: 94px;
+    transform: none;
+    width: 100%;
+  }
+  .appNav button {
+    justify-content: flex-start;
+    min-height: 52px;
+    padding: 10px 16px;
+    text-align: left;
+    width: 100%;
+  }
+  .appNav span { margin-left: auto; }
+  .cameraPanel, .resultPanel, .storyboardPanel, .settingsPanel { border-radius: 16px; padding: 18px; }
+  .cameraPanel {
+    gap: 20px;
+    grid-template-columns: minmax(0,1.6fr) minmax(310px,.7fr);
+  }
+  .cameraStage { aspect-ratio: 16 / 10; }
+  .cameraSidebar { align-content: start; gap: 16px; }
+  .privacyStrip { padding: 14px; }
+  .resultPanel { gap: 16px; }
+  .resultHero { grid-template-columns: 280px minmax(0,1fr); }
+  .storyboardGrid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .settingsView { align-items: start; grid-template-columns: repeat(12,minmax(0,1fr)); }
+  .settingsView > .viewIntro { grid-column: 1 / -1; }
+  .settingsView > section.settingsPanel:nth-of-type(1) {
+    grid-column: 1 / span 7;
+    grid-row: 2 / span 2;
+  }
+  .settingsView > section.settingsPanel:nth-of-type(2) {
+    grid-column: 8 / -1;
+    grid-row: 2;
+  }
+  .settingsView > section.settingsPanel:nth-of-type(3) {
+    grid-column: 8 / -1;
+    grid-row: 3;
+  }
+  .settingsView > .labsPanel {
+    grid-column: 1 / -1;
+    grid-row: 4;
+  }
+}
+
+@media (min-width: 1280px) {
+  .appShell { grid-template-columns: 210px minmax(0,1fr); }
+  .cameraPanel { grid-template-columns: minmax(0,1.7fr) minmax(330px,.65fr); }
 }
 
 @media (prefers-reduced-motion: reduce) {

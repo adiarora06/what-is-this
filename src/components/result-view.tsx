@@ -29,7 +29,7 @@ type Props = {
 export function ResultView(props: Props) {
   const confidence = confidenceLabel(props.card.confidence);
   return (
-    <section className="viewStack" aria-labelledby="result-heading">
+    <section className="viewStack resultView" aria-labelledby="result-heading">
       <button className="backButton" onClick={props.onScanAnother}>Back to camera</button>
       <article className="resultPanel">
         <header className="resultHero">

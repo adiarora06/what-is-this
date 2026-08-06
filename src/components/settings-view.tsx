@@ -55,7 +55,7 @@ const providerNames: Record<IdentificationProvider, string> = {
 export default function SettingsView(props: Props) {
   const correct = props.feedback.filter((item) => item.wasCorrect).length;
   return (
-    <section className="viewStack" aria-labelledby="settings-heading">
+    <section className="viewStack settingsView" aria-labelledby="settings-heading">
       <header className="viewIntro compact">
         <p className="eyebrow">Control center</p>
         <h1 id="settings-heading" tabIndex={-1}>Settings</h1>

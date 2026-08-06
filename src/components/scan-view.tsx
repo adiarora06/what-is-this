@@ -31,7 +31,7 @@ type Props = {
 export function ScanView(props: Props) {
   const busy = props.scanState === "scanning" || props.scanState === "identifying";
   return (
-    <section className="viewStack" aria-labelledby="scan-heading">
+    <section className="viewStack scanView" aria-labelledby="scan-heading">
       <header className="viewIntro">
         <p className="eyebrow">Point. Scan. Know.</p>
         <h1 id="scan-heading" tabIndex={-1}>What is this?</h1>

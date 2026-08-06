@@ -24,7 +24,7 @@ export function SavedView(props: Props) {
     return [item.objectName, item.category, ...(item.tags || [])].some((value) => value.toLowerCase().includes(normalizedQuery));
   });
   return (
-    <section className="viewStack" aria-labelledby="saved-heading">
+    <section className="viewStack savedView" aria-labelledby="saved-heading">
       <header className="viewIntro compact">
         <p className="eyebrow">Your library</p>
         <h1 id="saved-heading" tabIndex={-1}>Saved objects</h1>
