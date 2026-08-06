@@ -24,13 +24,9 @@ async function checkGemini(): Promise<GeminiHealth> {
 
   let value: GeminiHealth;
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: "Reply with OK." }] }],
-        generationConfig: { temperature: 0, maxOutputTokens: 8 },
-      }),
+    // Validate the configured key/model without spending generation tokens.
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}?key=${apiKey}`, {
+      method: "GET",
       cache: "no-store",
       signal: AbortSignal.timeout(3_000),
     });
@@ -51,16 +47,25 @@ async function checkGemini(): Promise<GeminiHealth> {
 async function checkBackend(): Promise<BackendHealth> {
   const backendUrl = process.env.VISION_BACKEND_URL?.replace(/\/$/, "");
   if (!backendUrl) return { configured: false, ok: false };
+  const backendToken = process.env.VISION_BACKEND_TOKEN?.trim();
+  if (!backendToken || backendToken.length < 24) {
+    return { configured: true, ok: false, error: "Classifier authentication needs a shared token of at least 24 characters." };
+  }
 
   try {
     const response = await fetch(`${backendUrl}/health`, {
       cache: "no-store",
-      headers: process.env.VISION_BACKEND_TOKEN ? { Authorization: `Bearer ${process.env.VISION_BACKEND_TOKEN}` } : undefined,
       signal: AbortSignal.timeout(3_500),
     });
     if (!response.ok) return { configured: true, ok: false, error: `Classifier health check returned ${response.status}.` };
 
-    const backend = await response.json();
+    const backend = (await response.json()) as {
+      ok?: boolean;
+      mode?: string;
+      yolo_model?: string;
+      classifier_model?: string;
+    };
+    if (!backend.ok) return { configured: true, ok: false, error: "Classifier reported that it is not ready." };
     return {
       configured: true,
       ok: true,
@@ -77,15 +82,27 @@ async function checkBackend(): Promise<BackendHealth> {
 
 export async function GET() {
   const accuracyProvider = (process.env.ACCURACY_PROVIDER || "auto").toLowerCase();
+  const turnstileRequired =
+    process.env.REQUIRE_TURNSTILE === "true" ||
+    Boolean(process.env.TURNSTILE_SECRET_KEY?.trim() || process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim());
+  const turnstileConfigured = Boolean(
+    process.env.TURNSTILE_SECRET_KEY?.trim() && process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim(),
+  );
   const [gemini, classifier] = await Promise.all([checkGemini(), checkBackend()]);
   const geminiSelected = !["classifier", "cv"].includes(accuracyProvider);
   const availableProviders = [
     "auto",
     ...(gemini.valid ? ["gemini"] : []),
-    ...(classifier.configured ? ["classifier"] : []),
+    ...(classifier.ok ? ["classifier"] : []),
   ];
-  const ok = (geminiSelected && gemini.valid) || classifier.ok;
-  const errors = [gemini.configured && !gemini.valid ? gemini.error : undefined, classifier.configured && !classifier.ok ? classifier.error : undefined].filter(Boolean);
+  const providerOk = (geminiSelected && gemini.valid) || classifier.ok;
+  const turnstileOk = !turnstileRequired || turnstileConfigured;
+  const ok = providerOk && turnstileOk;
+  const errors = [
+    gemini.configured && !gemini.valid ? gemini.error : undefined,
+    classifier.configured && !classifier.ok ? classifier.error : undefined,
+    !turnstileOk ? "Scan verification is not fully configured." : undefined,
+  ].filter(Boolean);
 
   return Response.json(
     {
@@ -98,8 +115,10 @@ export async function GET() {
       backendConfigured: classifier.configured,
       backendError: classifier.error,
       backend: classifier.backend,
+      turnstileRequired,
+      turnstileConfigured,
       error: ok ? undefined : errors.join(" ") || "No vision provider is available.",
     },
-    { headers: { "Cache-Control": "no-store" } },
+    { status: ok ? 200 : 503, headers: { "Cache-Control": "no-store" } },
   );
 }

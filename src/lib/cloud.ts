@@ -126,12 +126,30 @@ export async function loadCloudBoards(userId: string): Promise<StoryboardBoard[]
           careTips: payload.careTips || [],
           purchaseQuery,
           shoppingRecommended,
-          purchaseLinks: shoppingRecommended ? payload.purchaseLinks || purchaseLinksFor(purchaseQuery) : [],
+          // Rebuild trusted links rather than rendering URLs from stored JSON.
+          purchaseLinks: shoppingRecommended ? purchaseLinksFor(purchaseQuery) : [],
+          verified: payload.verified ?? false,
           safetyNote: payload.safetyNote,
           source: row.source || payload.source,
           correctedFrom: payload.correctedFrom,
           detections: payload.detections,
           alternatives: payload.alternatives,
+          barcode: payload.barcode?.slice(0, 160),
+          recognizedText: payload.recognizedText?.slice(0, 10).map((item) => item.slice(0, 240)),
+          tags: payload.tags?.slice(0, 12).map((item) => item.slice(0, 48)),
+          favorite: Boolean(payload.favorite),
+          visualSignature: payload.visualSignature?.length === 64 ? payload.visualSignature : undefined,
+          learnedCorrection: payload.learnedCorrection?.catalogEntryId ? {
+            catalogEntryId: payload.learnedCorrection.catalogEntryId.slice(0, 160),
+            originalObjectName: payload.learnedCorrection.originalObjectName?.slice(0, 160) || row.object_name,
+            originalShortName: payload.learnedCorrection.originalShortName?.slice(0, 160) || row.object_name,
+            originalCategory: payload.learnedCorrection.originalCategory?.slice(0, 120) || row.category,
+            originalAbout: payload.learnedCorrection.originalAbout?.slice(0, 1_500) || "Saved object",
+            originalPurchaseQuery: payload.learnedCorrection.originalPurchaseQuery?.slice(0, 300) || row.object_name,
+            originalPurchaseLinks: [],
+            originalShoppingRecommended: Boolean(payload.learnedCorrection.originalShoppingRecommended),
+            originalVisualClues: payload.learnedCorrection.originalVisualClues?.slice(0, 12).map((item) => item.slice(0, 300)) || [],
+          } : undefined,
           storagePath: row.image_path || undefined,
         } satisfies ObjectCard;
       }),
@@ -212,9 +230,15 @@ export async function clearCloudBoard(userId: string, board: StoryboardBoard) {
   }
 }
 
-export async function saveCloudFeedback(userId: string, card: ObjectCard, feedback: AccuracyFeedback) {
+export async function saveCloudFeedback(
+  userId: string,
+  card: ObjectCard,
+  feedback: AccuracyFeedback,
+  includeImage: boolean,
+) {
   const client = requireClient();
-  const imagePath = card.storagePath || (await uploadCardImage(client, userId, card, "feedback"));
+  const feedbackCard = feedback.image ? { ...card, image: feedback.image, storagePath: undefined } : card;
+  const imagePath = includeImage ? await uploadCardImage(client, userId, feedbackCard, "feedback") : null;
   const { error } = await client.from("scan_feedback").upsert(
     {
       id: feedback.id,

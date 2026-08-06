@@ -1,1051 +1,905 @@
 "use client";
 
+import dynamic from "next/dynamic";
+import Script from "next/script";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AppNavigation, type AppView } from "@/components/app-navigation";
+import { ResultView } from "@/components/result-view";
+import { SavedView } from "@/components/saved-view";
+import { ScanView } from "@/components/scan-view";
+import { mergeBoards } from "@/lib/board-merge";
+import { applyCatalogCorrection, findDuplicateCard, ignoreCatalogCorrection } from "@/lib/catalog-match";
 import {
-  clearCloudBoard,
-  deleteCloudCard,
-  getSupabaseBrowserClient,
-  isCloudConfigured,
-  loadCloudBoards,
-  saveCloudCard,
-  saveCloudFeedback,
-  syncCloudBoards,
-  type CloudUser,
-} from "@/lib/cloud";
+  captureVideoFrame,
+  fileAsDataUrl,
+  imageFingerprint,
+  imageVisualSignature,
+  isAbortError,
+  makeFeedbackThumbnail,
+  MAX_UPLOAD_FILE_BYTES,
+  normalizeText,
+  resizeImageDataUrl,
+  SUPPORTED_UPLOAD_TYPES,
+  waitForVideoReady,
+} from "@/lib/image-tools";
+import {
+  clearLocalData,
+  defaultPreferences,
+  defaultStoryboardBoards,
+  loadLocalData,
+  parseBackup,
+  saveBoards,
+  saveCatalog,
+  saveFeedback,
+  saveLocalData,
+  savePreferences,
+  type LocalData,
+  type LocalPreferences,
+} from "@/lib/local-store";
 import { purchaseLinksFor, shoppingRecommendedForCategory } from "@/lib/links";
-import type {
-  AccuracyFeedback,
-  CatalogEntry,
-  IdentificationProvider,
-  IdentifyResponse,
-  ObjectCard,
-  StoryboardBoard,
-} from "@/lib/types";
+import { friendlyScanError } from "@/lib/public-error";
+import type { AccuracyFeedback, CatalogEntry, IdentificationProvider, IdentifyResponse, ObjectCard, StoryboardBoard } from "@/lib/types";
 
-const STORYBOARD_KEY = "what-is-this-storyboard";
-const STORYBOARD_BOARDS_KEY = "what-is-this-storyboard-boards";
-const CATALOG_KEY = "what-is-this-catalog";
-const ACCURACY_FEEDBACK_KEY = "what-is-this-accuracy-feedback";
-const MAX_UPLOAD_FILE_BYTES = 15_000_000;
-const SUPPORTED_UPLOAD_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const SettingsView = dynamic(() => import("@/components/settings-view"), {
+  loading: () => <div className="settingsPanel"><p>Opening settings…</p></div>,
+});
 
 type ScanState = "idle" | "camera" | "scanning" | "identifying" | "done" | "error";
-type FrameCandidate = { image: string; score: number };
+type FeedbackChoice = "correct" | "incorrect";
 type BackendHealth = { ok: boolean; label: string; detail?: string };
-type HealthPayload = {
-  ok: boolean;
-  accuracyProvider?: string;
-  geminiConfigured?: boolean;
-  geminiValid?: boolean;
-  geminiError?: string;
-  backendConfigured?: boolean;
-  availableProviders?: string[];
-  backendError?: string;
-  error?: string;
-  backend?: {
-    mode?: string;
-    yoloModel?: string;
-    classifierModel?: string;
-  };
-};
-type FeedbackChoice = "idle" | "correct" | "incorrect";
-type InstallPromptEvent = Event & {
-  prompt: () => Promise<void>;
-  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
-};
+type CloudUser = { id: string; email?: string } | null;
+type InstallPromptEvent = Event & { prompt: () => Promise<void>; userChoice: Promise<{ outcome: "accepted" | "dismissed" }> };
+
+declare global {
+  interface Window {
+    turnstile?: {
+      render: (container: HTMLElement, options: { sitekey: string; action: string; callback: (token: string) => void; "expired-callback": () => void; "error-callback": () => void }) => string;
+      reset: (widgetId: string) => void;
+      remove: (widgetId: string) => void;
+    };
+  }
+}
 
 function nowId() {
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${Date.now()}-${crypto.randomUUID?.() || Math.random().toString(16).slice(2)}`;
 }
 
-function normalizeText(value: string) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
-function readStorage<T>(key: string, fallback: T): T {
-  if (typeof window === "undefined") return fallback;
-  try {
-    return JSON.parse(localStorage.getItem(key) || "") as T;
-  } catch {
-    return fallback;
-  }
-}
-
-function writeStorage<T>(key: string, value: T) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function defaultStoryboardBoards(): StoryboardBoard[] {
-  const createdAt = new Date().toISOString();
-  return [
-    { id: "for-later", name: "For Later", createdAt, items: [] },
-    { id: "shopping-ideas", name: "Shopping Ideas", createdAt, items: [] },
-  ];
-}
-
-function readStoryboardBoards() {
-  const boards = readStorage<StoryboardBoard[]>(STORYBOARD_BOARDS_KEY, []);
-  if (boards.length) return boards;
-
-  const oldStoryboard = readStorage<ObjectCard[]>(STORYBOARD_KEY, []);
-  const defaults = defaultStoryboardBoards();
-  if (oldStoryboard.length) {
-    defaults[0] = { ...defaults[0], items: oldStoryboard };
-  }
-  writeStorage(STORYBOARD_BOARDS_KEY, defaults);
-  return defaults;
-}
-
-function scoreFrame(canvas: HTMLCanvasElement) {
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) return 0;
-  const { width, height } = canvas;
-  const data = context.getImageData(0, 0, width, height).data;
-  const stride = Math.max(8, Math.floor(Math.min(width, height) / 70));
-  let edgeScore = 0;
-  let brightnessTotal = 0;
-  let samples = 0;
-
-  for (let y = stride; y < height - stride; y += stride) {
-    for (let x = stride; x < width - stride; x += stride) {
-      const i = (y * width + x) * 4;
-      const right = (y * width + x + stride) * 4;
-      const down = ((y + stride) * width + x) * 4;
-      const gray = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-      const rightGray = data[right] * 0.299 + data[right + 1] * 0.587 + data[right + 2] * 0.114;
-      const downGray = data[down] * 0.299 + data[down + 1] * 0.587 + data[down + 2] * 0.114;
-      edgeScore += Math.abs(gray - rightGray) + Math.abs(gray - downGray);
-      brightnessTotal += gray;
-      samples += 1;
-    }
-  }
-
-  const brightness = brightnessTotal / Math.max(1, samples);
-  return edgeScore / Math.max(1, samples) - Math.abs(132 - brightness) * 0.9;
-}
-
-function captureVideoFrame(video: HTMLVideoElement, canvas: HTMLCanvasElement): FrameCandidate | null {
-  if (!video.videoWidth || !video.videoHeight) return null;
-  const scale = Math.min(1, 1100 / Math.max(video.videoWidth, video.videoHeight));
-  canvas.width = Math.round(video.videoWidth * scale);
-  canvas.height = Math.round(video.videoHeight * scale);
-  const context = canvas.getContext("2d");
-  if (!context) return null;
-  context.drawImage(video, 0, 0, canvas.width, canvas.height);
-  return { image: canvas.toDataURL("image/jpeg", 0.82), score: scoreFrame(canvas) };
-}
-
-async function resizeImageDataUrl(image: string, maxDimension: number, quality: number) {
-  if (!image.startsWith("data:image/")) return undefined;
-  return new Promise<string | undefined>((resolve) => {
-    const source = new Image();
-    source.onload = () => {
-      const scale = Math.min(1, maxDimension / Math.max(source.naturalWidth, source.naturalHeight));
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(source.naturalWidth * scale));
-      canvas.height = Math.max(1, Math.round(source.naturalHeight * scale));
-      const context = canvas.getContext("2d");
-      if (!context) return resolve(undefined);
-      context.drawImage(source, 0, 0, canvas.width, canvas.height);
-      resolve(canvas.toDataURL("image/jpeg", quality));
-    };
-    source.onerror = () => resolve(undefined);
-    source.src = image;
-  });
-}
-
-function makeFeedbackThumbnail(image: string) {
-  return resizeImageDataUrl(image, 360, 0.68);
-}
-
-function fileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(new Error("The selected image could not be read."));
-    reader.readAsDataURL(file);
-  });
-}
-
-function labelsForCard(card: Pick<ObjectCard, "objectName" | "shortName" | "category" | "detections">) {
-  return Array.from(
-    new Set([card.objectName, card.shortName, card.category, ...(card.detections || []).map((item) => item.label)].map(normalizeText).filter(Boolean)),
-  );
-}
-
-function applyCatalogCorrection(card: ObjectCard, catalog: CatalogEntry[]): ObjectCard {
-  const labels = new Set(labelsForCard(card));
-  const match = catalog.find((entry) => entry.matchLabels.some((label) => labels.has(normalizeText(label))));
-  if (!match) return card;
-  const category = match.category || card.category;
-  const shoppingRecommended = shoppingRecommendedForCategory(category);
-  return {
-    ...card,
-    correctedFrom: card.objectName,
-    objectName: match.objectName,
-    shortName: match.objectName,
-    category,
-    about: match.notes || `Saved in your learning catalog as ${match.objectName}.`,
-    purchaseQuery: match.objectName,
-    shoppingRecommended,
-    purchaseLinks: shoppingRecommended ? purchaseLinksFor(match.objectName) : [],
-    visualClues: [`Matched your learning catalog from backend label "${card.objectName}".`, ...card.visualClues],
-  };
-}
-
-function cardFromResponse(response: Extract<IdentifyResponse, { ok: true }>, image: string, catalog: CatalogEntry[]): ObjectCard {
+async function cardFromResponse(
+  response: Extract<IdentifyResponse, { ok: true }>,
+  image: string,
+  catalog: CatalogEntry[],
+  assist: { barcode?: string; recognizedText?: string[] },
+) {
   const purchaseQuery = response.card.purchaseQuery || response.card.objectName;
   const shoppingRecommended = response.card.shoppingRecommended ?? shoppingRecommendedForCategory(response.card.category);
-  return applyCatalogCorrection(
-    {
-      id: nowId(),
-      createdAt: new Date().toISOString(),
-      image,
-      objectName: response.card.objectName,
-      shortName: response.card.shortName,
-      confidence: response.card.confidence,
-      category: response.card.category,
-      about: response.card.about,
-      visualClues: response.card.visualClues,
-      useCases: response.card.useCases,
-      careTips: response.card.careTips,
-      purchaseQuery,
-      shoppingRecommended,
-      purchaseLinks: shoppingRecommended
-        ? response.card.purchaseLinks?.length
-          ? response.card.purchaseLinks
-          : purchaseLinksFor(purchaseQuery)
-        : [],
-      safetyNote: response.card.safetyNote,
-      source: response.card.source,
-      detections: response.card.detections,
-      alternatives: response.card.alternatives,
-    },
-    catalog,
-  );
+  const [fingerprint, visualSignature] = await Promise.all([imageFingerprint(image), imageVisualSignature(image)]);
+  const card: ObjectCard = {
+    id: nowId(),
+    createdAt: new Date().toISOString(),
+    image,
+    objectName: response.card.objectName,
+    shortName: response.card.shortName,
+    confidence: response.card.confidence,
+    category: response.card.category,
+    about: response.card.about,
+    visualClues: response.card.visualClues,
+    useCases: response.card.useCases,
+    careTips: response.card.careTips,
+    purchaseQuery,
+    purchaseLinks: shoppingRecommended
+      ? response.card.purchaseLinks?.length
+        ? response.card.purchaseLinks
+        : purchaseLinksFor(purchaseQuery)
+      : [],
+    shoppingRecommended,
+    verified: false,
+    safetyNote: response.card.safetyNote,
+    source: response.card.source || response.provider,
+    detections: response.card.detections,
+    alternatives: response.card.alternatives,
+    barcode: assist.barcode,
+    recognizedText: assist.recognizedText,
+    visualSignature,
+  };
+  return applyCatalogCorrection(card, catalog, fingerprint, visualSignature);
 }
 
 export default function Home() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const storyboardSectionRef = useRef<HTMLElement | null>(null);
-  const resultSectionRef = useRef<HTMLElement | null>(null);
+  const turnstileContainerRef = useRef<HTMLDivElement | null>(null);
+  const turnstileWidgetRef = useRef<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const cloudEnabled = isCloudConfigured();
+  const requestControllerRef = useRef<AbortController | null>(null);
+  const requestSequenceRef = useRef(0);
+  const lastFocusTargetRef = useRef<string | null>(null);
+  const turnstileSiteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
+  const cloudEnabled = Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY);
+
+  const [view, setView] = useState<AppView>("scan");
+  const [showResult, setShowResult] = useState(false);
   const [scanState, setScanState] = useState<ScanState>("idle");
-  const [holdSeconds, setHoldSeconds] = useState(3);
-  const [progress, setProgress] = useState(0);
-  const [status, setStatus] = useState("Ready when your object is.");
-  const [context, setContext] = useState("");
+  const [cameraReady, setCameraReady] = useState(false);
   const [currentImage, setCurrentImage] = useState<string | null>(null);
   const [card, setCard] = useState<ObjectCard | null>(null);
-  const [storyboardBoards, setStoryboardBoards] = useState<StoryboardBoard[]>([]);
+  const [progress, setProgress] = useState(0);
+  const [modelMessage, setModelMessage] = useState<string>();
+  const [holdSeconds, setHoldSeconds] = useState(3);
+  const [context, setContext] = useState("");
+  const [status, setStatus] = useState("Ready when your object is.");
+  const [boards, setBoards] = useState<StoryboardBoard[]>(() => defaultStoryboardBoards());
+  const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
+  const [feedback, setFeedback] = useState<AccuracyFeedback[]>([]);
+  const [preferences, setPreferences] = useState<LocalPreferences>(defaultPreferences);
   const [activeBoardId, setActiveBoardId] = useState("for-later");
   const [selectedBoardId, setSelectedBoardId] = useState("for-later");
   const [newBoardName, setNewBoardName] = useState("");
-  const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
+  const [savedQuery, setSavedQuery] = useState("");
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [correctionName, setCorrectionName] = useState("");
   const [correctionCategory, setCorrectionCategory] = useState("");
   const [correctionNotes, setCorrectionNotes] = useState("");
-  const [feedbackChoice, setFeedbackChoice] = useState<FeedbackChoice>("idle");
-  const [accuracyFeedback, setAccuracyFeedback] = useState<AccuracyFeedback[]>([]);
-  const [providerChoice, setProviderChoice] = useState<IdentificationProvider>("auto");
-  const [availableProviders, setAvailableProviders] = useState<IdentificationProvider[]>(["auto"]);
   const [saved, setSaved] = useState(false);
-  const [hasShare, setHasShare] = useState(false);
-  const [cloudUser, setCloudUser] = useState<CloudUser | null>(null);
-  const [cloudStatus, setCloudStatus] = useState(cloudEnabled ? "Checking cloud account..." : "Saved on this device");
+  const [turnstileReady, setTurnstileReady] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const [availableProviders, setAvailableProviders] = useState<IdentificationProvider[]>(["device"]);
+  const [remoteProviderAvailable, setRemoteProviderAvailable] = useState<boolean | null>(null);
+  const [privateModelAvailable, setPrivateModelAvailable] = useState<boolean | null>(null);
+  const [backendHealth, setBackendHealth] = useState<BackendHealth>({ ok: false, label: "Checking cloud vision…" });
+  const [cloudUser, setCloudUser] = useState<CloudUser>(null);
+  const [cloudStatus, setCloudStatus] = useState(cloudEnabled ? "Sign in to sync your library" : "Saved only on this device");
   const [authEmail, setAuthEmail] = useState("");
-  const [authPassword, setAuthPassword] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const [isInstalled, setIsInstalled] = useState(false);
-  const [backendHealth, setBackendHealth] = useState<BackendHealth>({ ok: false, label: "Checking CV backend..." });
+  const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
+  const [pendingCloudChanges, setPendingCloudChanges] = useState(0);
+  const [backupData, setBackupData] = useState<LocalData | null>(null);
+  const [backupFileName, setBackupFileName] = useState("");
+  const [backupError, setBackupError] = useState<string>();
+
+  const totalSaved = useMemo(() => boards.reduce((sum, board) => sum + board.items.length, 0), [boards]);
+  const securityReady = preferences.providerChoice === "device" || !turnstileSiteKey || Boolean(turnstileToken);
 
   useEffect(() => {
     let cancelled = false;
-    const savedBoards = readStoryboardBoards();
-    setStoryboardBoards(savedBoards);
-    setActiveBoardId(savedBoards[0]?.id || "for-later");
-    setSelectedBoardId(savedBoards[0]?.id || "for-later");
-    setCatalog(readStorage<CatalogEntry[]>(CATALOG_KEY, []));
-    setAccuracyFeedback(readStorage<AccuracyFeedback[]>(ACCURACY_FEEDBACK_KEY, []));
-    setHasShare(typeof navigator !== "undefined" && Boolean(navigator.share));
-
-    async function checkBackend() {
-      try {
-        const response = await fetch("/api/health", { cache: "no-store" });
-        const payload = (await response.json()) as HealthPayload;
+    void loadLocalData()
+      .then((data) => {
         if (cancelled) return;
-        const providerOptions = (payload.availableProviders || ["auto"]).filter(
-          (item): item is IdentificationProvider => item === "auto" || item === "gemini" || item === "classifier",
-        );
-        setAvailableProviders(providerOptions.length ? providerOptions : ["auto"]);
-        setProviderChoice((current) => (providerOptions.includes(current) ? current : "auto"));
-        const provider = (payload.accuracyProvider || "auto").toLowerCase();
-        const backendDetail = [payload.backend?.mode, payload.backend?.yoloModel, payload.backend?.classifierModel].filter(Boolean).join(" + ");
-        if (payload.geminiValid && provider !== "classifier" && provider !== "cv") {
-          setBackendHealth({
-            ok: true,
-            label: "Gemini vision ready",
-            detail: backendDetail ? `Classifier fallback: ${backendDetail}` : payload.backendError,
-          });
-          return;
-        }
-        if (!payload.ok) {
-          setBackendHealth({ ok: false, label: "Vision providers offline", detail: payload.error || payload.geminiError || payload.backendError });
-          return;
-        }
-        setBackendHealth({
-          ok: true,
-          label: "Classifier online",
-          detail: [payload.geminiConfigured && !payload.geminiValid ? payload.geminiError : undefined, backendDetail].filter(Boolean).join(" Classifier: "),
-        });
-      } catch (error) {
-        if (!cancelled) {
-          setBackendHealth({ ok: false, label: "Vision status unavailable", detail: error instanceof Error ? error.message : undefined });
-        }
-      }
-    }
-
-    void checkBackend();
-
-    return () => {
-      cancelled = true;
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-    };
+        setBoards(data.boards);
+        setCatalog(data.catalog);
+        setFeedback(data.feedback);
+        setPreferences(data.preferences);
+        setActiveBoardId(data.boards[0]?.id || "for-later");
+        setSelectedBoardId(data.boards[0]?.id || "for-later");
+      })
+      .catch((error) => setStatus(error instanceof Error ? error.message : "Saved data could not be opened."));
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    if (!cloudEnabled) return;
-    const client = getSupabaseBrowserClient();
-    if (!client) return;
     let cancelled = false;
+    void fetch("/api/health", { cache: "no-store" })
+      .then(async (response) => ({ response, payload: (await response.json()) as { ok?: boolean; availableProviders?: string[]; error?: string; backendError?: string; accuracyProvider?: string } }))
+      .then(({ response, payload }) => {
+        if (cancelled) return;
+        const remote = (payload.availableProviders || []).filter((provider): provider is IdentificationProvider => provider === "gemini" || provider === "classifier");
+        const hasRemoteProvider = Boolean(response.ok && payload.ok && remote.length > 0);
+        const healthDetail = payload.error === "No vision provider is available."
+          ? "No cloud provider is configured. On-device recognition is ready."
+          : payload.error || payload.backendError;
+        setRemoteProviderAvailable(hasRemoteProvider);
+        setAvailableProviders(Array.from(new Set(["device", ...(hasRemoteProvider ? ["auto" as const, ...remote] : [])])) as IdentificationProvider[]);
+        setBackendHealth(response.ok && payload.ok
+          ? { ok: true, label: "Cloud vision ready", detail: payload.accuracyProvider ? `Preferred provider: ${payload.accuracyProvider}` : undefined }
+          : { ok: false, label: "Private fallback ready", detail: healthDetail });
+      })
+      .catch(() => {
+        setRemoteProviderAvailable(false);
+        setAvailableProviders(["device"]);
+        setBackendHealth({ ok: false, label: "Private mode available", detail: "Cloud vision status is unavailable." });
+      });
+    return () => { cancelled = true; };
+  }, []);
 
-    void client.auth.getUser().then(({ data, error }) => {
-      if (cancelled) return;
-      if (error) setCloudStatus("Cloud sign-in is unavailable");
-      setCloudUser(data.user ? { id: data.user.id, email: data.user.email } : null);
-      if (!data.user && !error) setCloudStatus("Sign in to sync storyboards");
+  useEffect(() => {
+    if (remoteProviderAvailable !== false || preferences.providerChoice === "device") return;
+    setPreferences((current) => {
+      if (current.providerChoice === "device") return current;
+      const updated = { ...current, providerChoice: "device" as const };
+      void savePreferences(updated).catch(() => setStatus("Private recognition is selected, but that preference could not be saved."));
+      return updated;
     });
+  }, [preferences.providerChoice, remoteProviderAvailable]);
 
-    const { data } = client.auth.onAuthStateChange((_event, session) => {
-      const user = session?.user;
-      setCloudUser(user ? { id: user.id, email: user.email } : null);
-      if (!user) {
-        const localBoards = readStoryboardBoards();
-        setStoryboardBoards(localBoards);
-        setActiveBoardId(localBoards[0]?.id || "for-later");
-        setSelectedBoardId(localBoards[0]?.id || "for-later");
-        setCloudStatus("Sign in to sync storyboards");
-      }
+  useEffect(() => {
+    let cancelled = false;
+    void import("@/lib/local-vision")
+      .then(({ privateModelReady }) => privateModelReady())
+      .then((ready) => { if (!cancelled) setPrivateModelAvailable(ready); })
+      .catch(() => { if (!cancelled) setPrivateModelAvailable(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    const headingId = showResult ? "result-heading" : `${view}-heading`;
+    if (lastFocusTargetRef.current === null) {
+      lastFocusTargetRef.current = headingId;
+      return;
+    }
+    if (lastFocusTargetRef.current === headingId) return;
+    lastFocusTargetRef.current = headingId;
+    const frame = window.requestAnimationFrame(() => document.getElementById(headingId)?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [showResult, view]);
+
+  useEffect(() => {
+    if (scanState !== "error" || view !== "scan") return;
+    const frame = window.requestAnimationFrame(() => document.getElementById("scan-error-heading")?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [scanState, view]);
+
+  useEffect(() => {
+    if (!turnstileSiteKey || !turnstileReady || !turnstileContainerRef.current || !window.turnstile || turnstileWidgetRef.current) return;
+    turnstileWidgetRef.current = window.turnstile.render(turnstileContainerRef.current, {
+      sitekey: turnstileSiteKey,
+      action: "identify",
+      callback: setTurnstileToken,
+      "expired-callback": () => setTurnstileToken(null),
+      "error-callback": () => setStatus("Security verification could not load. Choose on-device mode or try again."),
     });
-
     return () => {
-      cancelled = true;
-      data.subscription.unsubscribe();
+      if (turnstileWidgetRef.current && window.turnstile) window.turnstile.remove(turnstileWidgetRef.current);
+      turnstileWidgetRef.current = null;
     };
+  }, [turnstileReady, turnstileSiteKey]);
+
+  useEffect(() => {
+    if (!cloudEnabled) return;
+    let unsubscribe: (() => void) | undefined;
+    let cancelled = false;
+    void import("@/lib/cloud").then(({ getSupabaseBrowserClient }) => {
+      const client = getSupabaseBrowserClient();
+      if (!client || cancelled) return;
+      void client.auth.getUser().then(({ data, error }) => {
+        if (cancelled) return;
+        setCloudUser(data.user ? { id: data.user.id, email: data.user.email } : null);
+        if (error) setCloudStatus("Cloud sign-in is unavailable");
+      });
+      const listener = client.auth.onAuthStateChange((_event, session) => {
+        const user = session?.user;
+        setCloudUser(user ? { id: user.id, email: user.email } : null);
+        setCloudStatus(user ? "Cloud account connected" : "Sign in to sync your library");
+      });
+      unsubscribe = () => listener.data.subscription.unsubscribe();
+    });
+    return () => { cancelled = true; unsubscribe?.(); };
   }, [cloudEnabled]);
 
   useEffect(() => {
     if (!cloudUser) return;
     let cancelled = false;
-    setCloudStatus("Loading cloud storyboards...");
-    void loadCloudBoards(cloudUser.id)
-      .then((boards) => {
-        if (cancelled) return;
-        if (boards.length) {
-          setStoryboardBoards(boards);
-          setActiveBoardId(boards[0].id);
-          setSelectedBoardId(boards[0].id);
-          setCloudStatus("Cloud storyboards synced");
-        } else {
-          setCloudStatus("Cloud is ready; sync this device when you are ready");
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) setCloudStatus(error instanceof Error ? error.message : "Cloud sync failed");
-      });
-    return () => {
-      cancelled = true;
-    };
+    setCloudStatus("Checking cloud library…");
+    void import("@/lib/cloud").then(({ loadCloudBoards }) => loadCloudBoards(cloudUser.id)).then((cloudBoards) => {
+      if (cancelled) return;
+      if (cloudBoards.length) {
+        setBoards((current) => {
+          const merged = mergeBoards(current, cloudBoards);
+          void saveBoards(merged);
+          setActiveBoardId(merged[0]?.id || "for-later");
+          setSelectedBoardId(merged[0]?.id || "for-later");
+          return merged;
+        });
+      }
+      setLastSyncAt(new Date().toISOString());
+      setPendingCloudChanges(0);
+      setCloudStatus(cloudBoards.length ? "Cloud and device libraries merged" : "Cloud is ready for your first sync");
+    }).catch((error) => !cancelled && setCloudStatus(error instanceof Error ? error.message : "Cloud sync failed"));
+    return () => { cancelled = true; };
   }, [cloudUser]);
 
   useEffect(() => {
     setIsInstalled(window.matchMedia("(display-mode: standalone)").matches);
-    const handleInstallPrompt = (event: Event) => {
-      event.preventDefault();
-      setInstallPrompt(event as InstallPromptEvent);
-    };
-    const handleInstalled = () => {
-      setInstallPrompt(null);
-      setIsInstalled(true);
-    };
-    window.addEventListener("beforeinstallprompt", handleInstallPrompt);
-    window.addEventListener("appinstalled", handleInstalled);
-    if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") {
-      void navigator.serviceWorker.register("/sw.js");
-    }
-    return () => {
-      window.removeEventListener("beforeinstallprompt", handleInstallPrompt);
-      window.removeEventListener("appinstalled", handleInstalled);
-    };
+    const beforeInstall = (event: Event) => { event.preventDefault(); setInstallPrompt(event as InstallPromptEvent); };
+    const installed = () => { setInstallPrompt(null); setIsInstalled(true); };
+    window.addEventListener("beforeinstallprompt", beforeInstall);
+    window.addEventListener("appinstalled", installed);
+    if ("serviceWorker" in navigator && process.env.NODE_ENV === "production") void navigator.serviceWorker.register("/sw.js");
+    return () => { window.removeEventListener("beforeinstallprompt", beforeInstall); window.removeEventListener("appinstalled", installed); };
   }, []);
 
-  const activeBoard = useMemo(
-    () => storyboardBoards.find((board) => board.id === activeBoardId) || storyboardBoards[0],
-    [activeBoardId, storyboardBoards],
-  );
-  const selectedBoard = useMemo(
-    () => storyboardBoards.find((board) => board.id === selectedBoardId) || storyboardBoards[0],
-    [selectedBoardId, storyboardBoards],
-  );
-  const totalSavedObjects = useMemo(() => storyboardBoards.reduce((sum, board) => sum + board.items.length, 0), [storyboardBoards]);
-  const accuracySummary = useMemo(() => {
-    const correct = accuracyFeedback.filter((item) => item.wasCorrect).length;
-    return { correct, corrected: accuracyFeedback.length - correct, total: accuracyFeedback.length };
-  }, [accuracyFeedback]);
-  const canSave = useMemo(() => Boolean(card && !saved), [card, saved]);
-  const canCorrect = useMemo(() => Boolean(card && correctionName.trim()), [card, correctionName]);
+  useEffect(() => () => {
+    requestControllerRef.current?.abort();
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+  }, []);
 
-  function persistStoryboardBoards(nextBoards: StoryboardBoard[]) {
-    if (!cloudUser && !writeStorage(STORYBOARD_BOARDS_KEY, nextBoards)) return false;
-    setStoryboardBoards(nextBoards);
-    return true;
+  async function persistBoards(next: StoryboardBoard[]) {
+    try {
+      await saveBoards(next);
+      setBoards(next);
+      if (cloudUser) setPendingCloudChanges((count) => count + 1);
+      return true;
+    } catch {
+      setStatus("This device is out of storage. Remove saved objects or export a backup, then try again.");
+      return false;
+    }
   }
 
-  function createStoryboardBoard(name: string) {
-    const trimmed = name.trim();
-    if (!trimmed) return null;
-    const existing = storyboardBoards.find((board) => normalizeText(board.name) === normalizeText(trimmed));
-    if (existing) return existing;
-    return {
-      id: nowId(),
-      name: trimmed,
-      createdAt: new Date().toISOString(),
-      items: [],
-    };
+  function markCloudChangeSynced() {
+    setPendingCloudChanges((count) => Math.max(0, count - 1));
+    setLastSyncAt(new Date().toISOString());
+    setCloudStatus("Cloud library synced");
+  }
+
+  function updatePreferences(next: Partial<LocalPreferences>) {
+    const updated = { ...preferences, ...next };
+    setPreferences(updated);
+    void savePreferences(updated).catch(() => setStatus("That preference could not be saved."));
+  }
+
+  function handleIdentificationError(error: unknown) {
+    console.error("Identification failed", error);
+    setScanState("error");
+    setModelMessage(undefined);
+    setStatus(friendlyScanError(error));
+  }
+
+  function updateModelProgress(event: { phase: "checking" | "downloading" | "preparing" | "ready"; loaded?: number; total?: number }) {
+    if (event.phase === "checking") {
+      setProgress(0.84);
+      setModelMessage("Checking the private model…");
+      return;
+    }
+    if (event.phase === "downloading") {
+      const fraction = event.total ? Math.min(1, event.loaded! / event.total) : 0;
+      setProgress(0.84 + fraction * 0.12);
+      const percent = event.total ? `${Math.round(fraction * 100)}%` : `${Math.round((event.loaded || 0) / 1_000_000)} MB`;
+      setModelMessage(`Downloading the private model · ${percent}`);
+      return;
+    }
+    if (event.phase === "preparing") {
+      setProgress(0.97);
+      setModelMessage("Preparing private recognition…");
+      return;
+    }
+    setProgress(0.99);
+    setModelMessage("Private recognition is ready offline.");
+    setPrivateModelAvailable(true);
   }
 
   async function startCamera() {
+    if (scanState === "scanning" || scanState === "identifying") return;
+    setCameraReady(false);
+    setCurrentImage(null);
+    setShowResult(false);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error("Camera access is not supported here. Upload a photo instead.");
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
+      if (!videoRef.current) throw new Error("The camera preview is not available.");
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
+      await waitForVideoReady(videoRef.current);
+      setCameraReady(true);
       setScanState("camera");
-      setStatus("Hold one object in the guide and tap Scan.");
+      setStatus("Camera ready. Center one object and scan.");
     } catch (error) {
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
       setScanState("error");
-      setStatus(error instanceof Error ? error.message : "Camera permission was not granted.");
+      setStatus(error instanceof Error ? error.message : "Camera access was not granted.");
     }
   }
 
   async function identify(image: string) {
+    const sequence = ++requestSequenceRef.current;
+    requestControllerRef.current?.abort();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
     setScanState("identifying");
-    setStatus("Identifying the object...");
+    setProgress(0.86);
+    setStatus("Reading the image…");
     setSaved(false);
-    setFeedbackChoice("idle");
-    const response = await fetch("/api/identify", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image, context: context.trim() || undefined, provider: providerChoice }),
-    });
-    const payload = (await response.json()) as IdentifyResponse;
-    if (!payload.ok) throw new Error(payload.error);
-    const nextCard = cardFromResponse(payload, image, catalog);
-    setCard(nextCard);
-    setCorrectionName(nextCard.objectName);
-    setCorrectionCategory(nextCard.category);
-    setCorrectionNotes("");
-    setCurrentImage(image);
-    setScanState("done");
-    setStatus(payload.warnings?.length ? `Found: ${nextCard.shortName}. ${payload.warnings.join(" ")}` : `Found: ${nextCard.shortName}`);
+    try {
+      const localVision = await import("@/lib/local-vision");
+      const barcode = await localVision.detectBarcode(image);
+      let recognizedText: string[] | undefined;
+      if (preferences.textAssist) {
+        setStatus("Reading visible text privately…");
+        recognizedText = await localVision.extractText(image, (value) => setProgress(0.86 + value * 0.1));
+      }
+      const assistContext = [context.trim(), barcode ? `Barcode: ${barcode}` : "", recognizedText?.length ? `Visible text: ${recognizedText.join(" | ").slice(0, 240)}` : ""].filter(Boolean).join(" ").slice(0, 500);
+      let response: Extract<IdentifyResponse, { ok: true }>;
+      if (preferences.providerChoice === "device") {
+        setStatus("Identifying privately on this device…");
+        response = await localVision.identifyOnDevice(image, assistContext, updateModelProgress);
+      } else {
+        setStatus("Identifying the object…");
+        try {
+          const remote = await fetch("/api/identify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ image, context: assistContext || undefined, provider: preferences.providerChoice, turnstileToken: turnstileToken || undefined }),
+            signal: controller.signal,
+          });
+          const payload = (await remote.json()) as IdentifyResponse;
+          if (!payload.ok) throw new Error(payload.error);
+          response = payload;
+        } catch (error) {
+          if (preferences.providerChoice !== "auto" || isAbortError(error)) throw error;
+          setStatus("Cloud vision is unavailable. Switching to private recognition…");
+          response = await localVision.identifyOnDevice(image, assistContext, updateModelProgress);
+          response.warnings = ["Cloud vision was unavailable, so this result was produced on your device.", ...(response.warnings || [])];
+        }
+      }
+      if (sequence !== requestSequenceRef.current) return;
+      const nextCard = await cardFromResponse(response, image, catalog, { barcode, recognizedText });
+      if (sequence !== requestSequenceRef.current) return;
+      setCard(nextCard);
+      setCorrectionName(nextCard.objectName);
+      setCorrectionCategory(nextCard.category);
+      setCorrectionNotes("");
+      setCurrentImage(image);
+      setProgress(1);
+      setModelMessage(undefined);
+      setScanState("done");
+      setShowResult(true);
+      setStatus(response.warnings?.[0] || `Found: ${nextCard.shortName}. Please confirm the match.`);
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      setCameraReady(false);
+    } finally {
+      if (requestControllerRef.current === controller) requestControllerRef.current = null;
+      if (turnstileWidgetRef.current && window.turnstile) window.turnstile.reset(turnstileWidgetRef.current);
+      setTurnstileToken(null);
+    }
   }
 
   async function scanObject() {
-    if (!videoRef.current || !canvasRef.current) {
-      setStatus("Start the camera first.");
+    if (!cameraReady || !streamRef.current?.active || !videoRef.current || !canvasRef.current) {
+      setStatus("Start the camera and wait until it is ready.");
       return;
     }
     setScanState("scanning");
     setProgress(0);
     setCard(null);
-    setSaved(false);
     const startedAt = Date.now();
-    const durationMs = holdSeconds * 1000;
-    const candidates: FrameCandidate[] = [];
-    while (Date.now() - startedAt < durationMs) {
-      const candidate = captureVideoFrame(videoRef.current, canvasRef.current);
-      if (candidate) candidates.push(candidate);
-      setProgress(Math.min(1, (Date.now() - startedAt) / durationMs));
-      await new Promise((resolve) => setTimeout(resolve, 320));
+    const candidates: Array<{ image: string; score: number }> = [];
+    while (Date.now() - startedAt < holdSeconds * 1_000) {
+      const frame = captureVideoFrame(videoRef.current, canvasRef.current);
+      if (frame) candidates.push(frame);
+      setProgress(Math.min(0.78, ((Date.now() - startedAt) / (holdSeconds * 1_000)) * 0.78));
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
     }
-    const best = candidates.sort((a, b) => b.score - a.score)[0];
-    if (!best) {
-      setScanState("error");
-      setStatus("I could not capture a usable frame.");
-      return;
-    }
+    const best = candidates.sort((left, right) => right.score - left.score)[0];
+    if (!best) { setScanState("error"); setStatus("No usable frame was captured. Try more light or upload a photo."); return; }
+    setCurrentImage(best.image);
+    try { await identify(best.image); } catch (error) { if (!isAbortError(error)) handleIdentificationError(error); }
+  }
+
+  async function handleFile(file?: File) {
+    if (!file) return;
+    if (!SUPPORTED_UPLOAD_TYPES.has(file.type)) { setStatus("Choose a JPEG, PNG, or WebP image."); return; }
+    if (file.size > MAX_UPLOAD_FILE_BYTES) { setStatus("Choose an image smaller than 15 MB."); return; }
     try {
-      setCurrentImage(best.image);
-      setProgress(1);
-      await identify(best.image);
-    } catch (error) {
-      setScanState("error");
-      setStatus(error instanceof Error ? error.message : "Identification failed.");
+      const raw = await fileAsDataUrl(file);
+      const image = (await resizeImageDataUrl(raw, 1_600, 0.86)) || raw;
+      setCurrentImage(image);
+      await identify(image);
+    } catch (error) { if (!isAbortError(error)) handleIdentificationError(error); }
+  }
+
+  async function retryIdentification() {
+    if (!currentImage) return;
+    try { await identify(currentImage); } catch (error) { if (!isAbortError(error)) handleIdentificationError(error); }
+  }
+
+  async function recordFeedback(choice: FeedbackChoice, correctedName?: string) {
+    if (!card) return;
+    const entry: AccuracyFeedback = {
+      id: nowId(), createdAt: new Date().toISOString(), predictedName: card.objectName, correctedName,
+      category: card.category, confidence: card.confidence, source: card.source || "unknown", wasCorrect: choice === "correct",
+      image: preferences.saveFeedbackPhotos ? await makeFeedbackThumbnail(card.image) : undefined,
+    };
+    const next = [entry, ...feedback].slice(0, 5_000);
+    setFeedback(next);
+    await saveFeedback(next);
+    if (cloudUser) {
+      void import("@/lib/cloud").then(({ saveCloudFeedback }) => saveCloudFeedback(cloudUser.id, card, entry, preferences.saveFeedbackPhotos)).catch(() => setCloudStatus("Feedback saved here; cloud feedback sync failed"));
+    }
+  }
+
+  function confirmCard() {
+    if (!card) return;
+    setCard({ ...card, verified: true });
+    void recordFeedback("correct").catch(() => setStatus("Confirmed, but the feedback record could not be saved."));
+    setStatus("Confirmed. Choose a board and save it.");
+  }
+
+  async function correctCard() {
+    if (!card || !correctionName.trim()) return;
+    const correctedName = correctionName.trim().slice(0, 160);
+    const category = correctionCategory.trim().slice(0, 120) || card.category;
+    const [fingerprint, visualSignature, thumbnail] = await Promise.all([imageFingerprint(card.image), imageVisualSignature(card.image), resizeImageDataUrl(card.image, 240, 0.64)]);
+    const entry: CatalogEntry = {
+      id: nowId(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), objectName: correctedName,
+      category, notes: correctionNotes.trim().slice(0, 500), matchLabels: Array.from(new Set([card.objectName, card.shortName, ...(card.detections || []).map((item) => item.label)])),
+      fingerprint, visualSignature, image: thumbnail,
+    };
+    const nextCatalog = [entry, ...catalog.filter((item) => item.id !== card.learnedCorrection?.catalogEntryId)].slice(0, 2_000);
+    const shoppingRecommended = shoppingRecommendedForCategory(category);
+    setCatalog(nextCatalog);
+    await saveCatalog(nextCatalog);
+    setCard({ ...card, correctedFrom: card.objectName, objectName: correctedName, shortName: correctedName, category, about: correctionNotes.trim() || card.about, purchaseQuery: correctedName, shoppingRecommended, purchaseLinks: shoppingRecommended ? purchaseLinksFor(correctedName) : [], verified: true, visualSignature, learnedCorrection: undefined });
+    await recordFeedback("incorrect", correctedName);
+    setStatus("Correction saved. Similar future scans can learn from it.");
+  }
+
+  async function ignoreLearning() {
+    if (!card?.learnedCorrection) return;
+    const nextCatalog = catalog.filter((item) => item.id !== card.learnedCorrection?.catalogEntryId);
+    try {
+      await saveCatalog(nextCatalog);
+      const restored = ignoreCatalogCorrection(card);
+      setCatalog(nextCatalog);
+      setCard(restored);
+      setCorrectionName(restored.objectName);
+      setCorrectionCategory(restored.category);
+      setCorrectionNotes("");
+      setStatus("Learned correction ignored and removed. Confirm or correct the original model result.");
+    } catch {
+      setStatus("That learned correction could not be removed.");
     }
   }
 
   async function saveCard() {
-    if (!card) return;
-    const localImage = cloudUser ? card.image : (await resizeImageDataUrl(card.image, 720, 0.72)) || card.image;
-    const storedCard = { ...card, image: localImage };
-    const newBoard = createStoryboardBoard(newBoardName);
-    const targetBoardId = newBoard?.id || selectedBoard?.id || "for-later";
-    const baseBoards = storyboardBoards.length ? storyboardBoards : defaultStoryboardBoards();
-    const workingBoards = newBoard ? [...baseBoards, newBoard] : baseBoards;
-    const nextBoards = workingBoards.map((board) =>
-      board.id === targetBoardId
-        ? { ...board, items: [storedCard, ...board.items.filter((item) => item.id !== card.id)].slice(0, 40) }
-        : board,
-    );
-
-    if (!persistStoryboardBoards(nextBoards)) {
-      setSaved(false);
-      setScanState("error");
-      setStatus("Device storage is full. Remove saved objects or enable cloud sync, then try again.");
-      return;
-    }
-    setSelectedBoardId(targetBoardId);
-    setActiveBoardId(targetBoardId);
-    setNewBoardName("");
-    setSaved(true);
-    setStatus(`Saved to ${newBoard?.name || selectedBoard?.name || "For Later"}.`);
+    if (!card?.verified) { setStatus("Confirm or correct the identification before saving."); return; }
+    const duplicate = findDuplicateCard(card, boards);
+    if (duplicate) { setSaved(true); setStatus(`Already saved in ${duplicate.board.name}.`); return; }
+    const image = (await resizeImageDataUrl(card.image, 720, 0.72)) || card.image;
+    const storedCard = { ...card, image };
+    const trimmed = newBoardName.trim().slice(0, 80);
+    const existing = boards.find((board) => normalizeText(board.name) === normalizeText(trimmed));
+    const newBoard = trimmed && !existing ? { id: nowId(), name: trimmed, createdAt: new Date().toISOString(), items: [] as ObjectCard[] } : undefined;
+    const targetId = existing?.id || newBoard?.id || selectedBoardId || boards[0]?.id || "for-later";
+    const base = boards.length ? boards : defaultStoryboardBoards();
+    const working = newBoard ? [...base, newBoard] : base;
+    const next = working.map((board) => ({ ...board, items: board.id === targetId ? [storedCard, ...board.items] : board.items }));
+    if (!(await persistBoards(next))) return;
+    setSelectedBoardId(targetId); setActiveBoardId(targetId); setNewBoardName(""); setSaved(true);
+    setStatus(`Saved to ${next.find((board) => board.id === targetId)?.name || "your library"}.`);
     if (cloudUser) {
-      const targetBoard = nextBoards.find((board) => board.id === targetBoardId);
-      if (!targetBoard) return;
-      setCloudStatus("Saving image to cloud...");
-      try {
-        const storagePath = await saveCloudCard(cloudUser.id, targetBoard, card);
-        const cloudCard = { ...card, storagePath };
-        setCard(cloudCard);
-        setStoryboardBoards((current) =>
-          current.map((board) =>
-            board.id === targetBoardId
-              ? { ...board, items: board.items.map((item) => (item.id === card.id ? cloudCard : item)) }
-              : board,
-          ),
-        );
-        setCloudStatus("Cloud storyboards synced");
-        setStatus(`Saved to ${targetBoard.name} on all your signed-in devices.`);
-      } catch (error) {
-        setCloudStatus(error instanceof Error ? error.message : "Cloud save failed");
-        setStatus("Saved in this session, but cloud sync failed.");
-      }
+      const target = next.find((board) => board.id === targetId);
+      if (target) void import("@/lib/cloud").then(({ saveCloudCard }) => saveCloudCard(cloudUser.id, target, storedCard)).then(markCloudChangeSynced).catch(() => setCloudStatus("Saved here; cloud upload failed"));
     }
   }
 
-  function showSelectedStoryboard() {
-    setActiveBoardId(selectedBoardId);
-    window.setTimeout(() => storyboardSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  function resetScan() {
+    requestControllerRef.current?.abort();
+    setCard(null); setCurrentImage(null); setShowResult(false); setSaved(false); setProgress(0); setScanState("idle"); setContext("");
+    setModelMessage(undefined); setStatus("Ready for another object.");
   }
 
-  async function removeStoryboardItem(boardId: string, itemId: string) {
-    const item = storyboardBoards.find((board) => board.id === boardId)?.items.find((entry) => entry.id === itemId);
-    const persisted = persistStoryboardBoards(
-      storyboardBoards.map((board) =>
-        board.id === boardId ? { ...board, items: board.items.filter((item) => item.id !== itemId) } : board,
-      ),
-    );
-    if (!persisted) {
-      setStatus("Could not update device storage.");
-      return;
-    }
-    if (cloudUser && item) {
-      try {
-        await deleteCloudCard(cloudUser.id, boardId, item);
-        setCloudStatus("Cloud storyboards synced");
-      } catch (error) {
-        setCloudStatus(error instanceof Error ? error.message : "Cloud delete failed");
-      }
-    }
+  async function toggleFavorite(item: ObjectCard) {
+    const next = boards.map((board) => ({ ...board, items: board.items.map((stored) => stored.id === item.id ? { ...stored, favorite: !stored.favorite } : stored) }));
+    if (!(await persistBoards(next)) || !cloudUser) return;
+    const target = next.find((board) => board.items.some((stored) => stored.id === item.id));
+    const updated = target?.items.find((stored) => stored.id === item.id);
+    if (target && updated) void import("@/lib/cloud").then(({ saveCloudCard }) => saveCloudCard(cloudUser.id, target, updated)).then(markCloudChangeSynced).catch(() => setCloudStatus("Favorite saved here; cloud sync is pending"));
   }
 
-  async function clearActiveBoard() {
-    if (!activeBoard) return;
-    if (!window.confirm(`Clear all ${activeBoard.items.length} objects from ${activeBoard.name}?`)) return;
-    const persisted = persistStoryboardBoards(
-      storyboardBoards.map((board) => (board.id === activeBoard.id ? { ...board, items: [] } : board)),
-    );
-    if (!persisted) {
-      setStatus("Could not update device storage.");
-      return;
-    }
-    if (cloudUser) {
-      try {
-        await clearCloudBoard(cloudUser.id, activeBoard);
-        setCloudStatus("Cloud storyboards synced");
-      } catch (error) {
-        setCloudStatus(error instanceof Error ? error.message : "Cloud clear failed");
-      }
-    }
+  async function removeCard(item: ObjectCard) {
+    if (!window.confirm(`Remove ${item.objectName} from this board?`)) return;
+    const sourceBoard = boards.find((board) => board.items.some((stored) => stored.id === item.id));
+    const next = boards.map((board) => ({ ...board, items: board.items.filter((stored) => stored.id !== item.id) }));
+    if (!(await persistBoards(next))) return;
+    setStatus(`${item.objectName} removed.`);
+    if (cloudUser && sourceBoard) void import("@/lib/cloud").then(({ deleteCloudCard }) => deleteCloudCard(cloudUser.id, sourceBoard.id, item)).then(markCloudChangeSynced).catch(() => setCloudStatus("Removed here; cloud delete is pending"));
   }
 
-  async function recordAccuracyFeedback(sourceCard: ObjectCard, wasCorrect: boolean, correctedName?: string) {
-    const feedback: AccuracyFeedback = {
-      id: sourceCard.id,
-      createdAt: new Date().toISOString(),
-      predictedName: sourceCard.correctedFrom || sourceCard.objectName,
-      correctedName: correctedName || undefined,
-      category: sourceCard.category,
-      confidence: sourceCard.confidence,
-      source: sourceCard.source || providerChoice,
-      wasCorrect,
-      image: await makeFeedbackThumbnail(sourceCard.image),
-      storagePath: sourceCard.storagePath,
-    };
-    const nextFeedback = [feedback, ...accuracyFeedback.filter((item) => item.id !== feedback.id)].slice(0, 60);
-    setAccuracyFeedback(nextFeedback);
-    if (!writeStorage(ACCURACY_FEEDBACK_KEY, nextFeedback)) {
-      const compact = nextFeedback.map(({ image: _image, ...item }) => item);
-      setAccuracyFeedback(compact);
-      writeStorage(ACCURACY_FEEDBACK_KEY, compact);
-    }
-    if (cloudUser) {
-      try {
-        await saveCloudFeedback(cloudUser.id, sourceCard, feedback);
-        setCloudStatus("Feedback added to your cloud accuracy set");
-      } catch (error) {
-        setCloudStatus(error instanceof Error ? error.message : "Cloud feedback save failed");
-      }
-    }
-  }
-
-  async function confirmResult() {
-    if (!card) return;
-    setFeedbackChoice("correct");
-    await recordAccuracyFeedback(card, true);
-    setStatus(`Confirmed: ${card.objectName}`);
-  }
-
-  async function saveCorrection() {
-    if (!card || !correctionName.trim()) return;
-    const correctedName = correctionName.trim();
-    const correctedCategory = correctionCategory.trim() || card.category;
-    const now = new Date().toISOString();
-    const catalogImage = (await resizeImageDataUrl(card.image, 480, 0.7)) || undefined;
-    const entry: CatalogEntry = {
-      id: nowId(),
-      createdAt: now,
-      updatedAt: now,
-      objectName: correctedName,
-      category: correctedCategory,
-      notes: correctionNotes.trim(),
-      matchLabels: Array.from(new Set([...labelsForCard(card), normalizeText(correctedName)])).filter(Boolean),
-      image: catalogImage,
-    };
-    const nextCatalog = [entry, ...catalog.filter((item) => item.objectName !== correctedName)].slice(0, 150);
-    if (!writeStorage(CATALOG_KEY, nextCatalog)) {
-      setScanState("error");
-      setStatus("Device storage is full. Remove saved corrections and try again.");
-      return;
-    }
-    setCatalog(nextCatalog);
-    await recordAccuracyFeedback(card, false, correctedName);
-    const shoppingRecommended = shoppingRecommendedForCategory(correctedCategory);
-    const correctedCard: ObjectCard = {
-      ...card,
-      correctedFrom: card.correctedFrom || card.objectName,
-      objectName: correctedName,
-      shortName: correctedName,
-      category: correctedCategory,
-      about: correctionNotes.trim() || card.about,
-      purchaseQuery: correctedName,
-      shoppingRecommended,
-      purchaseLinks: shoppingRecommended ? purchaseLinksFor(correctedName) : [],
-      visualClues: [`Saved to your learning catalog as ${correctedName}.`, ...card.visualClues],
-    };
-    setCard(correctedCard);
-    setFeedbackChoice("correct");
-    const affectedBoards = storyboardBoards.filter((board) => board.items.some((item) => item.id === card.id));
-    if (affectedBoards.length) {
-      const persisted = persistStoryboardBoards(
-        storyboardBoards.map((board) => ({
-          ...board,
-          items: board.items.map((item) => (item.id === card.id ? correctedCard : item)),
-        })),
-      );
-      if (!persisted) setStatus("Correction saved, but device storage could not update the storyboard.");
-      if (cloudUser) {
-        try {
-          for (const board of affectedBoards) await saveCloudCard(cloudUser.id, board, correctedCard);
-          setCloudStatus("Corrected object synced to cloud");
-        } catch (error) {
-          setCloudStatus(error instanceof Error ? error.message : "Cloud correction sync failed");
-        }
-      }
-    }
-    setStatus(`Saved correction: ${correctedName}`);
-  }
-
-  function exportCatalog() {
-    const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), entries: catalog }, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = "what-is-this-catalog.json";
-    anchor.click();
-    URL.revokeObjectURL(url);
-  }
-
-  function exportAccuracySet() {
-    const blob = new Blob(
-      [JSON.stringify({ exportedAt: new Date().toISOString(), summary: accuracySummary, entries: accuracyFeedback }, null, 2)],
-      { type: "application/json" },
-    );
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = "what-is-this-accuracy-set.json";
-    anchor.click();
-    URL.revokeObjectURL(url);
-  }
-
-  async function authenticate(mode: "sign-in" | "sign-up") {
-    const client = getSupabaseBrowserClient();
-    if (!client || !authEmail.trim() || authPassword.length < 6) return;
-    setAuthBusy(true);
-    setCloudStatus(mode === "sign-in" ? "Signing in..." : "Creating account...");
-    try {
-      const result =
-        mode === "sign-in"
-          ? await client.auth.signInWithPassword({ email: authEmail.trim(), password: authPassword })
-          : await client.auth.signUp({
-              email: authEmail.trim(),
-              password: authPassword,
-              options: { emailRedirectTo: window.location.origin },
-            });
-      if (result.error) throw result.error;
-      setAuthPassword("");
-      setCloudStatus(result.data.session ? "Cloud account connected" : "Check your email to confirm your account");
-    } catch (error) {
-      setCloudStatus(error instanceof Error ? error.message : "Cloud sign-in failed");
-    } finally {
-      setAuthBusy(false);
-    }
-  }
-
-  async function signOut() {
-    const client = getSupabaseBrowserClient();
-    if (!client) return;
-    await client.auth.signOut();
-  }
-
-  async function syncThisDevice() {
-    if (!cloudUser) return;
-    const localBoards = readStoryboardBoards();
-    setCloudStatus("Syncing saved objects...");
-    try {
-      await syncCloudBoards(cloudUser.id, localBoards, (done, total) => setCloudStatus(`Syncing ${done} of ${total} objects...`));
-      const boards = await loadCloudBoards(cloudUser.id);
-      if (boards.length) {
-        setStoryboardBoards(boards);
-        setActiveBoardId(boards[0].id);
-        setSelectedBoardId(boards[0].id);
-      }
-      setCloudStatus("Cloud storyboards synced");
-    } catch (error) {
-      setCloudStatus(error instanceof Error ? error.message : "Cloud sync failed");
-    }
-  }
-
-  async function installApp() {
-    if (!installPrompt) return;
-    await installPrompt.prompt();
-    const choice = await installPrompt.userChoice;
-    if (choice.outcome === "accepted") setInstallPrompt(null);
-  }
-
-  function openStoryboardItem(item: ObjectCard) {
-    setCard(item);
-    setCurrentImage(item.image);
-    setCorrectionName(item.objectName);
-    setCorrectionCategory(item.category);
-    setCorrectionNotes("");
-    setFeedbackChoice("idle");
-    setScanState("done");
-    setStatus(`Opened: ${item.objectName}`);
-    window.setTimeout(() => resultSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  async function clearBoard() {
+    const board = boards.find((item) => item.id === activeBoardId);
+    if (!board?.items.length || !window.confirm(`Remove all ${board.items.length} objects from ${board.name}?`)) return;
+    if (!(await persistBoards(boards.map((item) => item.id === board.id ? { ...item, items: [] } : item)))) return;
+    if (cloudUser) void import("@/lib/cloud").then(({ clearCloudBoard }) => clearCloudBoard(cloudUser.id, board)).then(markCloudChangeSynced).catch(() => setCloudStatus("Cleared here; cloud delete is pending"));
   }
 
   async function shareCard() {
-    if (!card || !navigator.share) return;
-    const url = card.purchaseLinks[0]?.url;
-    await navigator.share({ title: card.objectName, text: `${card.objectName}: ${card.about}`, ...(url ? { url } : {}) });
+    if (!card) return;
+    const text = `${card.objectName} — ${card.about}`;
+    try {
+      if (navigator.share) await navigator.share({ title: card.objectName, text });
+      else { await navigator.clipboard.writeText(text); setStatus("Result copied to the clipboard."); }
+    } catch (error) {
+      if (!isAbortError(error)) setStatus("Sharing is unavailable in this browser.");
+    }
   }
 
-  async function loadUploadedImage(file: File) {
+  async function sendMagicLink() {
+    if (!authEmail.trim()) return;
+    setAuthBusy(true); setCloudStatus("Sending secure link…");
     try {
-      if (!SUPPORTED_UPLOAD_TYPES.has(file.type)) throw new Error("Choose a JPEG, PNG, or WebP image.");
-      if (file.size > MAX_UPLOAD_FILE_BYTES) throw new Error("Choose an image smaller than 15 MB.");
-      setScanState("identifying");
-      setStatus("Preparing the image...");
-      const original = await fileAsDataUrl(file);
-      let image = await resizeImageDataUrl(original, 1600, 0.82);
-      if (!image) throw new Error("The selected image could not be prepared.");
-      if (image.length > 3_900_000) image = (await resizeImageDataUrl(original, 1280, 0.7)) || image;
-      setCurrentImage(image);
-      await identify(image);
+      const { getSupabaseBrowserClient } = await import("@/lib/cloud");
+      const client = getSupabaseBrowserClient();
+      if (!client) throw new Error("Cloud sync is not configured.");
+      const { error } = await client.auth.signInWithOtp({ email: authEmail.trim(), options: { emailRedirectTo: window.location.origin } });
+      if (error) throw error;
+      setCloudStatus("Check your email for the secure sign-in link.");
+    } catch (error) { setCloudStatus(error instanceof Error ? error.message : "Sign-in link could not be sent."); }
+    finally { setAuthBusy(false); }
+  }
+
+  async function signOut() {
+    const { getSupabaseBrowserClient } = await import("@/lib/cloud");
+    await getSupabaseBrowserClient()?.auth.signOut();
+    setCloudUser(null); setCloudStatus("Signed out. Your device library remains available.");
+  }
+
+  async function syncCloud() {
+    if (!cloudUser) return;
+    setCloudStatus("Syncing…");
+    try {
+      const { syncCloudBoards } = await import("@/lib/cloud");
+      await syncCloudBoards(cloudUser.id, boards, (done, total) => setCloudStatus(`Syncing ${done} of ${total}…`));
+      setPendingCloudChanges(0);
+      setLastSyncAt(new Date().toISOString());
+      setCloudStatus("Cloud library synced");
+    } catch (error) { setCloudStatus(error instanceof Error ? error.message : "Cloud sync failed"); }
+  }
+
+  function exportData() {
+    const blob = new Blob([JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), boards, catalog, feedback, preferences }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a"); anchor.href = url; anchor.download = `what-is-this-backup-${new Date().toISOString().slice(0, 10)}.json`; anchor.click();
+    URL.revokeObjectURL(url); setStatus("Backup exported.");
+  }
+
+  async function previewBackup(file?: File) {
+    setBackupError(undefined);
+    setBackupData(null);
+    setBackupFileName("");
+    if (!file) return;
+    if (file.size > 25_000_000) { setBackupError("Choose a backup smaller than 25 MB."); return; }
+    try {
+      const parsed = parseBackup(await file.text());
+      setBackupData(parsed);
+      setBackupFileName(file.name.slice(0, 160));
     } catch (error) {
-      setScanState("error");
-      setStatus(error instanceof Error ? error.message : "Identification failed.");
+      setBackupError(error instanceof Error ? error.message : "The backup could not be read.");
     }
+  }
+
+  async function applyBackup() {
+    if (!backupData) return;
+    try {
+      const restored = await saveLocalData(backupData);
+      setBoards(restored.boards);
+      setCatalog(restored.catalog);
+      setFeedback(restored.feedback);
+      setPreferences(restored.preferences);
+      setActiveBoardId(restored.boards[0]?.id || "for-later");
+      setSelectedBoardId(restored.boards[0]?.id || "for-later");
+      setPendingCloudChanges(cloudUser ? 1 : 0);
+      setBackupData(null);
+      setBackupFileName("");
+      setBackupError(undefined);
+      setStatus("Backup restored on this device. Review it before syncing to the cloud.");
+    } catch (error) {
+      setBackupError(error instanceof Error ? error.message : "The backup could not be restored.");
+    }
+  }
+
+  async function updateCatalogEntry(entry: CatalogEntry) {
+    const next = catalog.map((item) => item.id === entry.id ? entry : item);
+    try {
+      await saveCatalog(next);
+      setCatalog(next);
+      setStatus(`Updated learning for ${entry.objectName}.`);
+    } catch {
+      setStatus("That learned correction could not be updated.");
+    }
+  }
+
+  async function removeCatalogEntry(id: string) {
+    const entry = catalog.find((item) => item.id === id);
+    if (!entry || !window.confirm(`Forget the learned correction for ${entry.objectName}?`)) return;
+    const next = catalog.filter((item) => item.id !== id);
+    try {
+      await saveCatalog(next);
+      setCatalog(next);
+      setStatus(`Forgot the learned correction for ${entry.objectName}.`);
+    } catch {
+      setStatus("That learned correction could not be removed.");
+    }
+  }
+
+  async function deleteDeviceData() {
+    if (!window.confirm("Delete all saved boards, feedback, corrections, and preferences from this device? This cannot be undone.")) return;
+    await clearLocalData();
+    const defaults = defaultStoryboardBoards();
+    setBoards(defaults); setCatalog([]); setFeedback([]); setPreferences(defaultPreferences); setActiveBoardId(defaults[0].id); setSelectedBoardId(defaults[0].id);
+    setStatus("All app data on this device was deleted.");
+  }
+
+  async function installApp() {
+    await installPrompt?.prompt();
+    const choice = await installPrompt?.userChoice;
+    if (choice?.outcome === "accepted") setInstallPrompt(null);
+  }
+
+  async function clearPrivateModel() {
+    try {
+      const { clearPrivateModelCache } = await import("@/lib/local-vision");
+      await clearPrivateModelCache();
+      setPrivateModelAvailable(false);
+      setStatus("Downloaded private models removed.");
+    } catch {
+      setStatus("The private model cache could not be cleared.");
+    }
+  }
+
+  function cancelBackupRestore() {
+    setBackupData(null);
+    setBackupFileName("");
+    setBackupError(undefined);
+  }
+
+  function changeView(next: AppView) {
+    if (scanState === "error") {
+      setScanState("idle");
+      setCurrentImage(null);
+      setModelMessage(undefined);
+      setStatus(next === "settings" ? "Choose how recognition should run." : next === "saved" ? `${totalSaved} saved object${totalSaved === 1 ? "" : "s"}.` : "Ready when your object is.");
+    }
+    setView(next);
+    setShowResult(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   return (
     <main className="appShell">
-      <section className="heroBand">
-        <div>
-          <p className="eyebrow">What Is This?</p>
-          <h1>Point your phone at one object. Hold still. Get the name, story, and where to find it.</h1>
-        </div>
-        <div className="heroStatus">
-          <div className={`backendPill ${backendHealth.ok ? "" : "offline"}`} title={backendHealth.detail}>
-            {backendHealth.label}
-          </div>
-          <div className={`statusPill ${scanState === "error" ? "error" : ""}`}>{status}</div>
-          {installPrompt && !isInstalled && <button className="secondaryButton installButton" onClick={installApp}>Install on this phone</button>}
-        </div>
-      </section>
-
-      <section className="accountPanel">
-        <div>
-          <p className="eyebrow">Your Storyboards</p>
-          <h3>{cloudUser ? cloudUser.email || "Cloud account" : cloudEnabled ? "Sync across devices" : "Saved on this device"}</h3>
-          <span>{cloudStatus}</span>
-        </div>
-        {cloudUser ? (
-          <div className="accountActions">
-            <button className="secondaryButton" onClick={syncThisDevice}>Sync this device</button>
-            <button className="textButton" onClick={signOut}>Sign out</button>
-          </div>
-        ) : cloudEnabled ? (
-          <div className="authFields">
-            <input type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="Email" />
-            <input type="password" minLength={6} autoComplete="current-password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="Password (6+ characters)" />
-            <button className="primaryButton" disabled={authBusy || !authEmail.trim() || authPassword.length < 6} onClick={() => authenticate("sign-in")}>Sign in</button>
-            <button className="secondaryButton" disabled={authBusy || !authEmail.trim() || authPassword.length < 6} onClick={() => authenticate("sign-up")}>Create account</button>
-          </div>
-        ) : null}
-      </section>
-
-      <section className="cameraPanel">
-        <div className="cameraStage">
-          <video ref={videoRef} playsInline muted autoPlay />
-          {!streamRef.current && (
-            <div className="cameraEmpty">
-              <strong>Use the rear camera</strong>
-              <span>Best with one object centered, good light, and a plain-ish background.</span>
-            </div>
-          )}
-          <div className="guideBox"><span /><span /><span /><span /></div>
-          {currentImage && <img className="capturePreview" src={currentImage} alt="Last captured object" />}
-        </div>
-        <canvas ref={canvasRef} hidden />
-        <div className="cameraSidebar">
-          <div className="controls">
-            <button className="primaryButton" onClick={startCamera}>{streamRef.current ? "Restart Camera" : "Start Camera"}</button>
-            <button className="scanButton" onClick={scanObject} disabled={scanState === "scanning" || scanState === "identifying"}>
-              {scanState === "scanning" ? "Scanning..." : scanState === "identifying" ? "Thinking..." : "Scan Object"}
-            </button>
-            <button className="secondaryButton" onClick={() => fileInputRef.current?.click()}>Upload</button>
-            <input ref={fileInputRef} hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) void loadUploadedImage(file);
-              event.currentTarget.value = "";
-            }} />
-          </div>
-          <label className="rangeField">
-            <span>Hold duration <b>{holdSeconds}s</b></span>
-            <input type="range" min="2" max="5" step="1" value={holdSeconds} onChange={(event) => setHoldSeconds(Number(event.target.value))} />
-          </label>
-          <div className="progressTrack" aria-hidden="true"><div style={{ width: `${Math.round(progress * 100)}%` }} /></div>
-          <label className="contextBox">
-            <span>Optional context</span>
-            <textarea value={context} onChange={(event) => setContext(event.target.value)} placeholder="Example: identify exact model if visible." />
-          </label>
-          <label className="providerField">
-            <span>Vision engine</span>
-            <select value={providerChoice} onChange={(event) => setProviderChoice(event.target.value as IdentificationProvider)}>
-              {availableProviders.includes("auto") && <option value="auto">Best available</option>}
-              {availableProviders.includes("gemini") && <option value="gemini">Gemini vision</option>}
-              {availableProviders.includes("classifier") && <option value="classifier">Free classifier</option>}
-            </select>
-          </label>
-        </div>
-      </section>
-
-      {card && (
-        <section className="resultPanel" ref={resultSectionRef}>
-          <div className="resultHeader">
-            <img src={card.image} alt={card.objectName} />
-            <div>
-              <p className="eyebrow">{card.category}</p>
-              <h2>{card.objectName}</h2>
-              <span>{Math.round(card.confidence * 100)}% confidence</span>
-              {card.source && <span className="sourceBadge">{card.source}</span>}
-              {card.correctedFrom && <span className="sourceBadge">corrected from {card.correctedFrom}</span>}
-            </div>
-          </div>
-          <div className="aboutCard"><h3>About Me</h3><p>{card.about}</p></div>
-          <InfoList title="Visual clues" items={card.visualClues} />
-          <InfoList title="Backend detections" items={(card.detections || []).slice(0, 4).map((item) => `${item.label} (${Math.round(item.confidence * 100)}%)`)} />
-          <InfoList title="Alternative matches" items={(card.alternatives || []).slice(0, 5).map((item) => `${item.label} (${Math.round(item.confidence * 100)}%)`)} />
-          <InfoList title="Use cases" items={card.useCases} />
-          <InfoList title="Care tips" items={card.careTips} />
-          {card.safetyNote && <p className="safetyNote">{card.safetyNote}</p>}
-          <section className={`verificationPanel ${feedbackChoice === "correct" ? "confirmed" : ""}`}>
-            <div><p className="eyebrow">Accuracy Check</p><h3>{feedbackChoice === "correct" ? "Result recorded" : "Is this identification right?"}</h3></div>
-            {feedbackChoice !== "correct" && (
-              <div className="verificationActions">
-                <button className="primaryButton" onClick={confirmResult}>Yes, correct</button>
-                <button className="secondaryButton" onClick={() => setFeedbackChoice("incorrect")}>Not quite</button>
-              </div>
-            )}
-          </section>
-          {feedbackChoice === "incorrect" && (
-            <section className="correctionPanel">
-              <div><p className="eyebrow">Teach It</p><h3>Correct this result</h3></div>
-              <label><span>Correct object name</span><input value={correctionName} onChange={(event) => setCorrectionName(event.target.value)} /></label>
-              <label><span>Category</span><input value={correctionCategory} onChange={(event) => setCorrectionCategory(event.target.value)} /></label>
-              <label><span>Notes for future cards</span><textarea value={correctionNotes} onChange={(event) => setCorrectionNotes(event.target.value)} placeholder="Example: This is my Logitech MX Master 3S mouse." /></label>
-              <button className="primaryButton" onClick={saveCorrection} disabled={!canCorrect}>Save Correct Label</button>
-            </section>
-          )}
-          {card.purchaseLinks.length > 0 ? (
-            <div className="linkGrid">{card.purchaseLinks.map((link) => <a key={link.label} href={link.url} target="_blank" rel="noreferrer">{link.label}</a>)}</div>
-          ) : (
-            <p className="shoppingNote">Shopping links are only shown for ordinary consumer products.</p>
-          )}
-          <section className="savePanel">
-            <div>
-              <p className="eyebrow">Save For Later</p>
-              <h3>Add this scan to a storyboard</h3>
-            </div>
-            <label>
-              <span>Choose storyboard</span>
-              <select value={selectedBoardId} onChange={(event) => { setSelectedBoardId(event.target.value); setSaved(false); }}>
-                {storyboardBoards.map((board) => (
-                  <option key={board.id} value={board.id}>{board.name} ({board.items.length})</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span>Or make a new one</span>
-              <input value={newBoardName} onChange={(event) => { setNewBoardName(event.target.value); setSaved(false); }} placeholder="Example: Gift ideas, Desk setup, Try on later" />
-            </label>
-            <button className="primaryButton" onClick={saveCard} disabled={!canSave}>{saved ? "Saved" : `Save to ${newBoardName.trim() || selectedBoard?.name || "For Later"}`}</button>
-          </section>
-          <div className="controls stickyControls">
-            <button className="primaryButton" onClick={showSelectedStoryboard} disabled={!storyboardBoards.length}>View Storyboard</button>
-            <button className="secondaryButton" onClick={shareCard} disabled={!hasShare}>Share</button>
-          </div>
-        </section>
+      {turnstileSiteKey && (
+        <Script
+          src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit"
+          strategy="afterInteractive"
+          onLoad={() => setTurnstileReady(true)}
+        />
       )}
+      <header className="topBar">
+        <button className="wordmark" onClick={() => changeView("scan")} aria-label="What Is This home">
+          What Is This?
+        </button>
+        <span className={`statusDot ${scanState === "error" ? "error" : ""}`} aria-hidden="true" />
+      </header>
+      <div className={`globalStatus ${scanState === "error" ? "error" : ""}`} role="status" aria-live="polite">
+        {status}
+      </div>
 
-      <section className="accuracyPanel">
-        <div className="sectionTitle">
-          <div><p className="eyebrow">Accuracy Lab</p><h2>Labeled Results</h2></div>
-          {accuracyFeedback.length > 0 && <button className="textButton" onClick={exportAccuracySet}>Export Test Set</button>}
-        </div>
-        <div className="accuracyStats">
-          <div><strong>{accuracySummary.total}</strong><span>reviewed</span></div>
-          <div><strong>{accuracySummary.correct}</strong><span>correct</span></div>
-          <div><strong>{accuracySummary.corrected}</strong><span>corrected</span></div>
-        </div>
-        {accuracyFeedback.length === 0 ? (
-          <div className="emptyState">Confirm or correct scan results to start a reusable accuracy test set.</div>
-        ) : (
-          <div className="feedbackList">
-            {accuracyFeedback.slice(0, 6).map((item) => (
-              <div key={item.id}>
-                <span className={item.wasCorrect ? "feedbackMark correct" : "feedbackMark"}>{item.wasCorrect ? "Correct" : "Corrected"}</span>
-                <strong>{item.correctedName || item.predictedName}</strong>
-                <small>{item.source} - {Math.round(item.confidence * 100)}%</small>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section className="catalogPanel">
-        <div className="sectionTitle">
-          <div><p className="eyebrow">Learning Catalog</p><h2>Corrections</h2></div>
-          {catalog.length > 0 && <button className="textButton" onClick={exportCatalog}>Export</button>}
-        </div>
-        {catalog.length === 0 ? <div className="emptyState">Correct a result once and the app will reuse that saved label when similar backend labels appear.</div> : (
-          <div className="catalogGrid">{catalog.map((item) => (
-            <article className="catalogItem" key={item.id}>
-              {item.image && <img src={item.image} alt={item.objectName} />}
-              <div><strong>{item.objectName}</strong><span>{item.category}</span><small>{item.matchLabels.slice(0, 4).join(", ")}</small></div>
-              <button onClick={() => {
-                const next = catalog.filter((entry) => entry.id !== item.id);
-                setCatalog(next);
-                writeStorage(CATALOG_KEY, next);
-              }}>Remove</button>
-            </article>
-          ))}</div>
-        )}
-      </section>
-
-      <section className="storyboardPanel" ref={storyboardSectionRef}>
-        <div className="sectionTitle">
-          <div><p className="eyebrow">Storyboards</p><h2>Saved Objects</h2></div>
-          {activeBoard && activeBoard.items.length > 0 && <button className="textButton" onClick={clearActiveBoard}>Clear Board</button>}
-        </div>
-        <div className="boardTabs" aria-label="Saved object storyboards">
-          {storyboardBoards.map((board) => (
-            <button className={board.id === activeBoard?.id ? "active" : ""} key={board.id} onClick={() => setActiveBoardId(board.id)}>
-              {board.name}<span>{board.items.length}</span>
-            </button>
-          ))}
-        </div>
-        {totalSavedObjects === 0 ? <div className="emptyState">Upload or scan an object, then save it to a shopping, research, or for-later storyboard.</div> : activeBoard && activeBoard.items.length === 0 ? (
-          <div className="emptyState">No objects saved to {activeBoard.name} yet.</div>
-        ) : activeBoard && (
-          <div className="storyboardGrid">{activeBoard.items.map((item) => (
-            <article className="storyItem" key={item.id}>
-              {item.image ? <img src={item.image} alt={item.objectName} /> : <div className="imagePlaceholder">No image</div>}
-              <div><strong>{item.shortName}</strong><span>{new Date(item.createdAt).toLocaleString()}</span></div>
-              <div className="storyActions">
-                <button onClick={() => openStoryboardItem(item)}>View</button>
-                {item.purchaseLinks[0]?.url && <a href={item.purchaseLinks[0].url} target="_blank" rel="noreferrer">Shop</a>}
-                <button onClick={() => removeStoryboardItem(activeBoard.id, item.id)}>Remove</button>
-              </div>
-            </article>
-          ))}</div>
-        )}
-      </section>
+      {view === "scan" && !showResult && (
+        <ScanView
+          videoRef={videoRef}
+          canvasRef={canvasRef}
+          fileInputRef={fileInputRef}
+          turnstileContainerRef={turnstileContainerRef}
+          currentImage={currentImage}
+          scanState={scanState}
+          cameraReady={cameraReady}
+          progress={progress}
+          holdSeconds={holdSeconds}
+          context={context}
+          securityNeeded={Boolean(turnstileSiteKey) && preferences.providerChoice !== "device"}
+          securityReady={securityReady}
+          privacyMode={preferences.providerChoice === "device" ? "device" : "remote"}
+          modelMessage={modelMessage}
+          canRetry={Boolean(currentImage)}
+          onStartCamera={() => void startCamera()}
+          onScan={() => void scanObject()}
+          onUpload={() => fileInputRef.current?.click()}
+          onRetry={() => void retryIdentification()}
+          onOpenSettings={() => changeView("settings")}
+          onFile={(file) => void handleFile(file)}
+          onHoldSeconds={setHoldSeconds}
+          onContext={setContext}
+        />
+      )}
+      {view === "scan" && showResult && card && (
+        <ResultView
+          card={card}
+          boards={boards}
+          selectedBoardId={selectedBoardId}
+          newBoardName={newBoardName}
+          correctionName={correctionName}
+          correctionCategory={correctionCategory}
+          correctionNotes={correctionNotes}
+          saveFeedbackPhotos={preferences.saveFeedbackPhotos}
+          saved={saved}
+          onConfirm={confirmCard}
+          onCorrect={() => void correctCard()}
+          onSave={() => void saveCard()}
+          onScanAnother={resetScan}
+          onShare={() => void shareCard()}
+          onIgnoreLearning={() => void ignoreLearning()}
+          onSelectedBoard={setSelectedBoardId}
+          onNewBoardName={setNewBoardName}
+          onCorrectionName={setCorrectionName}
+          onCorrectionCategory={setCorrectionCategory}
+          onCorrectionNotes={setCorrectionNotes}
+          onFeedbackPhotos={(value) => updatePreferences({ saveFeedbackPhotos: value })}
+          onTags={(tags) => setCard((current) => current ? { ...current, tags } : current)}
+        />
+      )}
+      {view === "saved" && (
+        <SavedView
+          boards={boards}
+          activeBoardId={activeBoardId}
+          query={savedQuery}
+          favoritesOnly={favoritesOnly}
+          onActiveBoard={setActiveBoardId}
+          onQuery={setSavedQuery}
+          onFavoritesOnly={setFavoritesOnly}
+          onView={(item) => {
+            setCard(item);
+            setSaved(true);
+            setView("scan");
+            setShowResult(true);
+            window.scrollTo({ top: 0 });
+          }}
+          onFavorite={(item) => void toggleFavorite(item)}
+          onRemove={(item) => void removeCard(item)}
+          onClearBoard={() => void clearBoard()}
+          onScan={() => changeView("scan")}
+        />
+      )}
+      {view === "settings" && (
+        <SettingsView
+          cloudEnabled={cloudEnabled}
+          cloudUser={cloudUser}
+          cloudStatus={cloudStatus}
+          authEmail={authEmail}
+          authBusy={authBusy}
+          providerChoice={preferences.providerChoice}
+          availableProviders={availableProviders}
+          textAssist={preferences.textAssist}
+          saveFeedbackPhotos={preferences.saveFeedbackPhotos}
+          backendLabel={backendHealth.label}
+          backendDetail={backendHealth.detail}
+          backendOk={backendHealth.ok}
+          privateModelAvailable={privateModelAvailable}
+          installAvailable={Boolean(installPrompt)}
+          installed={isInstalled}
+          feedback={feedback}
+          catalog={catalog}
+          pendingCloudChanges={pendingCloudChanges}
+          lastSyncAt={lastSyncAt}
+          backupPreview={backupData ? {
+            fileName: backupFileName,
+            boards: backupData.boards.length,
+            objects: backupData.boards.reduce((sum, board) => sum + board.items.length, 0),
+            corrections: backupData.catalog.length,
+            reviews: backupData.feedback.length,
+          } : null}
+          backupError={backupError}
+          onAuthEmail={setAuthEmail}
+          onMagicLink={() => void sendMagicLink()}
+          onSignOut={() => void signOut()}
+          onSync={() => void syncCloud()}
+          onProvider={(value) => updatePreferences({ providerChoice: value })}
+          onTextAssist={(value) => updatePreferences({ textAssist: value })}
+          onFeedbackPhotos={(value) => updatePreferences({ saveFeedbackPhotos: value })}
+          onInstall={() => void installApp()}
+          onExport={exportData}
+          onBackupFile={(file) => void previewBackup(file)}
+          onApplyBackup={() => void applyBackup()}
+          onCancelBackup={cancelBackupRestore}
+          onDeleteLocal={() => void deleteDeviceData()}
+          onClearModel={() => void clearPrivateModel()}
+          onUpdateCatalog={(entry) => void updateCatalogEntry(entry)}
+          onRemoveCatalog={(id) => void removeCatalogEntry(id)}
+        />
+      )}
+      <AppNavigation active={view} savedCount={totalSaved} onChange={changeView} />
     </main>
   );
-}
-
-function InfoList({ title, items }: { title: string; items: string[] }) {
-  if (!items.length) return null;
-  return <section className="infoList"><h3>{title}</h3><ul>{items.slice(0, 5).map((item) => <li key={item}>{item}</li>)}</ul></section>;
 }

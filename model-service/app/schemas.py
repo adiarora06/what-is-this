@@ -4,7 +4,12 @@ from pydantic import BaseModel, Field
 
 
 class IdentifyRequest(BaseModel):
-    image: str = Field(description="data:image/... base64 data URL")
+    image: str = Field(
+        min_length=32,
+        max_length=4_100_000,
+        pattern=r"^data:image/(jpeg|png|webp);base64,",
+        description="JPEG, PNG, or WebP base64 data URL up to 3 MB decoded",
+    )
     context: str | None = Field(default=None, max_length=500)
 
 
