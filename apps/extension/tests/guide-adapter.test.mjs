@@ -9,7 +9,6 @@ import {
   createPreviewGuide,
   endpointForBackendOrigin,
   normalizeGuideResult,
-  originPermissionForBackend,
   runBrowserGuide,
   runCloudGuide,
 } from "../guide-adapter.js";
@@ -93,6 +92,14 @@ test("private preview returns the exact GuideResult shape with local processing"
   assert.equal(response.result.processing.model, "deterministic-preview");
   assert.equal(response.result.intent, "identify");
   assert.match(response.result.warnings[0], /does not analyze image pixels/i);
+});
+
+test("private preview omits clarification when it provides preview steps and checks", () => {
+  const { result } = createPreviewGuide({ intent: "identify", image, title: "Example" });
+
+  assert.equal("clarificationQuestion" in result, false);
+  assert.ok(result.steps.length > 0);
+  assert.ok(result.completionChecks.length > 0);
 });
 
 test("result normalization rejects duplicate or malformed step ids", () => {
@@ -301,6 +308,49 @@ test("browser AI allows a direct warning not to disclose a credential", async ()
   assert.equal(response.result.processing.provider, "local");
 });
 
+test("browser AI rejects actionable guidance disguised as a clarification", async () => {
+  const languageModel = {
+    async create() {
+      return {
+        async prompt() {
+          return JSON.stringify(validResult({
+            confidence: 0.8,
+            clarificationQuestion: "Which exact model is shown?",
+          }));
+        },
+        destroy() {},
+      };
+    },
+  };
+
+  await assert.rejects(
+    runBrowserGuide({ intent: "explain", image, goal: "Explain this control" }, { languageModel }),
+    (error) => error instanceof GuideAdapterError && error.code === "UNSAFE_GUIDE",
+  );
+});
+
+test("browser AI rejects definitive high-stakes conclusions", async () => {
+  const languageModel = {
+    async create() {
+      return {
+        async prompt() {
+          return JSON.stringify(validResult({
+            summary: "This confirms you have an infection.",
+            warnings: ["Stop and contact a qualified medical professional."],
+            steps: [{ id: "contact", title: "Contact a professional", instruction: "Use an official medical service.", risk: "Stop if symptoms worsen." }],
+          }));
+        },
+        destroy() {},
+      };
+    },
+  };
+
+  await assert.rejects(
+    runBrowserGuide({ intent: "explain", image, goal: "Explain this medical image" }, { languageModel }),
+    (error) => error instanceof GuideAdapterError && error.code === "UNSAFE_GUIDE",
+  );
+});
+
 test("browser AI requires a stop warning for zero-step high-stakes results", async () => {
   const languageModel = {
     async create() {
@@ -326,7 +376,6 @@ test("browser AI requires a stop warning for zero-step high-stakes results", asy
 
 test("cloud adapter is locked to the trusted backend and omits cookies", async () => {
   assert.equal(endpointForBackendOrigin(), `${TRUSTED_BACKEND_ORIGIN}/api/guide`);
-  assert.equal(originPermissionForBackend(), `${TRUSTED_BACKEND_ORIGIN}/*`);
   assert.throws(() => endpointForBackendOrigin("https://example.com"), /only trusts/i);
 
   let call;

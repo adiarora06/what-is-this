@@ -35,6 +35,7 @@ test("every manifest entry point is packaged locally", async () => {
 
 test("side panel loads no remote scripts or inline executable code", async () => {
   const html = await readFile(new URL("../sidepanel.html", import.meta.url), "utf8");
+  const javascript = await readFile(new URL("../sidepanel.js", import.meta.url), "utf8");
   assert.match(html, /<script type="module" src="sidepanel\.js"><\/script>/);
   assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/i);
   assert.doesNotMatch(html, /<script[^>]+src=["']https?:/i);
@@ -42,4 +43,8 @@ test("side panel loads no remote scripts or inline executable code", async () =>
   assert.match(html, /<button id="center-crop-button"[^>]*type="button"[^>]*>Select center crop<\/button>/);
   assert.match(html, /id="capture-button"[^>]*disabled/);
   assert.match(html, /id="intent-select"[^>]*disabled/);
+  assert.match(html, /id="open-web-settings-button"[^>]*>Open web settings<\/button>/);
+  assert.match(html, /Opening Settings sends no screenshot, page address, selection, or account token\./);
+  assert.doesNotMatch(javascript, /chrome\.permissions\.request/);
+  assert.match(javascript, /\?view=settings&source=extension/);
 });

@@ -80,7 +80,7 @@ describe("POST /api/guide", () => {
       intent: "guide",
       goal: "Learn how to use this safely",
       confidence: 0,
-      sources: [{ label: "Control overview", url: "https://example.com/product" }],
+      sources: [{ label: "Provided page (example.com)", url: "https://example.com/product" }],
       processing: { provider: "local" },
     });
     expect(payload.result.steps).toEqual([]);
@@ -116,7 +116,7 @@ describe("POST /api/guide", () => {
     expect(response.status).toBe(200);
     expect(payload.result.intent).toBe("explain");
     expect(payload.result.goal).toBe("Explain the selected indicator");
-    expect(payload.result.sources).toEqual([{ label: "Official manual", url: "https://example.com/manual" }]);
+    expect(payload.result.sources).toEqual([{ label: "Provided page (example.com)", url: "https://example.com/manual" }]);
     expect(payload.result.processing).toEqual({ provider: "gemini", model: "gemini-2.5-flash" });
 
     const [providerUrl, providerOptions] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -295,6 +295,48 @@ describe("POST /api/guide", () => {
     });
   });
 
+  it("rejects clarification results that also contain actionable guidance", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "");
+    vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const unsafeContent = {
+      ...providerContent(),
+      confidence: 0.8,
+      clarificationQuestion: "Which exact model is shown?",
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(unsafeContent) }] } }],
+    })));
+
+    const response = await POST(request({ intent: "explain", goal: "Explain this control", provider: "gemini" }));
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "The generated guidance did not pass safety checks.",
+    });
+  });
+
+  it("rejects definitive medical, legal, or financial conclusions", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "");
+    vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const unsafeContent = {
+      ...providerContent(),
+      summary: "This confirms you have an infection.",
+      warnings: ["Stop and contact a qualified medical professional."],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(unsafeContent) }] } }],
+    })));
+
+    const response = await POST(request({ intent: "explain", goal: "Explain this medical image", provider: "gemini" }));
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "The generated guidance did not pass safety checks.",
+    });
+  });
+
   it("fails closed when an explicit provider returns invalid structured output", async () => {
     vi.stubEnv("GEMINI_API_KEY", "test-key");
     vi.stubEnv("TURNSTILE_SECRET_KEY", "");
@@ -337,6 +379,9 @@ describe("POST /api/guide", () => {
 
     const insecure = await POST(request({ intent: "guide", url: "http://example.com" }));
     expect(insecure.status).toBe(400);
+
+    const missingGoal = await POST(request({ intent: "compare", image: "data:image/jpeg;base64,/9j/2Q==" }));
+    expect(missingGoal.status).toBe(400);
 
     const malformedImage = await POST(
       request({ intent: "identify", image: "data:image/jpeg;base64,iVBORw0KGgo=" }),

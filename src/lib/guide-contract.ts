@@ -43,6 +43,13 @@ export const guideRequestSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (["troubleshoot", "compare", "guide"].includes(value.intent) && !value.goal) {
+      context.addIssue({
+        code: "custom",
+        message: "Describe the outcome, problem, or comparison target for this intent.",
+        path: ["goal"],
+      });
+    }
     if (!value.image && !value.goal && !value.pageContext && !value.selection && !value.url && !value.title) {
       context.addIssue({
         code: "custom",
@@ -126,6 +133,22 @@ function requireUniqueStepIds(
   });
 }
 
+function requireClarificationOnlyState(
+  value: { clarificationQuestion?: string; confidence: number; steps: unknown[]; completionChecks: unknown[] },
+  context: z.RefinementCtx,
+) {
+  if (!value.clarificationQuestion) return;
+  if (value.confidence > 0.35) {
+    context.addIssue({ code: "custom", message: "Clarification results must remain low confidence.", path: ["confidence"] });
+  }
+  if (value.steps.length > 0) {
+    context.addIssue({ code: "custom", message: "Clarification results cannot include steps.", path: ["steps"] });
+  }
+  if (value.completionChecks.length > 0) {
+    context.addIssue({ code: "custom", message: "Clarification results cannot include completion checks.", path: ["completionChecks"] });
+  }
+}
+
 /** Provider-owned content. Processing metadata is added by the server after validation. */
 export const guideContentSchema = z.object(guideResultShape).strict().superRefine(requireUniqueStepIds);
 
@@ -133,7 +156,26 @@ export const guideContentSchema = z.object(guideResultShape).strict().superRefin
 export const guideResultSchema = z
   .object({ ...guideResultShape, processing: processingSchema })
   .strict()
-  .superRefine(requireUniqueStepIds);
+  .superRefine((value, context) => {
+    requireUniqueStepIds(value, context);
+    requireClarificationOnlyState(value, context);
+  });
+
+export const guideResponseSchema = z.discriminatedUnion("ok", [
+  z.object({
+    ok: z.literal(true),
+    result: guideResultSchema,
+    provider: guideExecutionProviderSchema,
+    model: optionalText(120),
+    warnings: z.array(requiredText(700)).max(8).optional(),
+    requestId: requiredText(160),
+  }).strict(),
+  z.object({
+    ok: z.literal(false),
+    error: requiredText(700),
+    requestId: requiredText(160),
+  }).strict(),
+]);
 
 export type GuideIntent = z.infer<typeof guideIntentSchema>;
 export type GuideProvider = z.infer<typeof guideProviderSchema>;
@@ -142,17 +184,4 @@ export type GuideRequest = z.infer<typeof guideRequestSchema>;
 export type GuideContent = z.infer<typeof guideContentSchema>;
 export type GuideResult = z.infer<typeof guideResultSchema>;
 
-export type GuideResponse =
-  | {
-      ok: true;
-      result: GuideResult;
-      provider: GuideExecutionProvider;
-      model?: string;
-      warnings?: string[];
-      requestId: string;
-    }
-  | {
-      ok: false;
-      error: string;
-      requestId: string;
-    };
+export type GuideResponse = z.infer<typeof guideResponseSchema>;

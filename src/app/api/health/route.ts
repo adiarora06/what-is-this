@@ -91,14 +91,23 @@ export async function GET() {
   );
   const [gemini, classifier] = await Promise.all([checkGemini(), checkBackend()]);
   const geminiSelected = !["classifier", "cv"].includes(accuracyProvider);
+  const openaiFallbackAvailable = Boolean(
+    process.env.OPENAI_API_KEY?.trim() && process.env.ALLOW_OPENAI_FALLBACK === "true",
+  );
   const availableProviders = [
     "auto",
     ...(gemini.valid ? ["gemini"] : []),
     ...(classifier.ok ? ["classifier"] : []),
+    ...(openaiFallbackAvailable ? ["openai"] : []),
   ];
-  const providerOk = (geminiSelected && gemini.valid) || classifier.ok;
+  const availableGuideProviders = [
+    ...(gemini.valid ? ["gemini"] : []),
+    ...(openaiFallbackAvailable ? ["openai"] : []),
+  ];
+  const providerOk = (geminiSelected && gemini.valid) || classifier.ok || openaiFallbackAvailable;
+  const guideOk = availableGuideProviders.length > 0;
   const turnstileOk = !turnstileRequired || turnstileConfigured;
-  const ok = providerOk && turnstileOk;
+  const ok = (providerOk || guideOk) && turnstileOk;
   const errors = [
     gemini.configured && !gemini.valid ? gemini.error : undefined,
     classifier.configured && !classifier.ok ? classifier.error : undefined,
@@ -122,8 +131,9 @@ export async function GET() {
   return Response.json(
     {
       ok,
-      status: ok ? "cloud-ready" : "private-ready",
+      status: providerOk && turnstileOk ? "cloud-ready" : guideOk && turnstileOk ? "guide-ready" : "private-ready",
       availableProviders,
+      availableGuideProviders,
       error: ok ? undefined : "Cloud recognition is unavailable. On-device mode remains available.",
     },
     { status: ok ? 200 : 503, headers: { "Cache-Control": "no-store" } },

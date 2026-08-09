@@ -17,7 +17,6 @@ import {
   TRUSTED_BACKEND_ORIGIN,
   buildGuideRequest,
   detectLanguageModel,
-  originPermissionForBackend,
   runGuide,
 } from "./guide-adapter.js";
 
@@ -26,7 +25,7 @@ const elements = Object.fromEntries([
   "preview-loading", "center-crop-button", "apply-crop-button", "restore-image-button", "source-summary",
   "capture-button", "capture-status", "intent-select", "goal-label", "goal-input",
   "goal-help", "goal-count", "browser-ai-option", "browser-ai-status", "data-boundary",
-  "generate-button", "generate-status",
+  "open-web-settings-button", "generate-button", "generate-status",
   "result-panel", "confidence-badge", "result-heading", "result-goal", "result-summary",
   "warnings-section", "warnings-list", "clarification-section", "clarification-text",
   "recommendation-heading", "recommendation-reason", "evidence-section", "evidence-list",
@@ -488,11 +487,6 @@ async function generateGuide() {
       url: source.pageUrl,
       title: source.pageTitle,
     });
-    let permissionGranted = true;
-    if (adapter === "cloud-api") {
-      permissionGranted = await chrome.permissions.request({ origins: [originPermissionForBackend()] });
-    }
-    if (!permissionGranted) throw new GuideAdapterError("Chrome access to the guide API was not approved.", "PERMISSION_DENIED");
     if (session.draft?.id !== startingDraftId) return;
 
     clearTimeout(saveTimer);
@@ -624,6 +618,9 @@ elements["apply-crop-button"].addEventListener("click", () => void applyCrop());
 elements["center-crop-button"].addEventListener("click", selectCenterCrop);
 elements["restore-image-button"].addEventListener("click", () => void restoreImage());
 elements["generate-button"].addEventListener("click", () => void generateGuide());
+elements["open-web-settings-button"].addEventListener("click", () => {
+  void chrome.tabs.create({ url: `${TRUSTED_BACKEND_ORIGIN}/?view=settings&source=extension` });
+});
 
 elements["intent-select"].addEventListener("change", (event) => {
   if (session.status === "capturing" || session.status === "generating") return;

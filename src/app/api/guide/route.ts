@@ -23,10 +23,16 @@ const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 class RequestTooLargeError extends Error {}
 
-class UnsafeGuideOutputError extends Error {
-  reason: "prohibited-output" | "missing-high-stakes-controls";
+type UnsafeGuideReason =
+  | "prohibited-output"
+  | "actionable-clarification"
+  | "definitive-high-stakes-claim"
+  | "missing-high-stakes-controls";
 
-  constructor(reason: "prohibited-output" | "missing-high-stakes-controls") {
+class UnsafeGuideOutputError extends Error {
+  reason: UnsafeGuideReason;
+
+  constructor(reason: UnsafeGuideReason) {
     super("Provider guidance did not pass the deterministic safety gate.");
     this.name = "UnsafeGuideOutputError";
     this.reason = reason;
@@ -51,6 +57,11 @@ const PROVIDER_INSTRUCTIONS = [
 
 const HIGH_STAKES_PATTERN = /\b(?:medical|medicine|medication|dose|dosage|diagnos(?:is|e|ed|ing|tic)|injury|bleeding|poison|overdose|electrical|electricity|voltage|wiring|mains|energized|gas|chemical|fire|flame|weapon|firearm|explosive|structural|load-bearing|vehicle|brake|airbag|legal|lawsuit|contract|financial|bank|investment|tax|loan|mortgage|account[- ]security|password|passcode|mfa|2fa|seed phrase|private key|api key|access token)\b/i;
 const STOP_CONDITION_PATTERN = /\b(?:stop|do not|don't|never|avoid|disconnect|call|contact|emergency|professional|qualified|licensed|manufacturer|support)\b/i;
+const DEFINITIVE_HIGH_STAKES_PATTERNS = [
+  /\b(?:you have|the diagnosis is|this (?:proves|confirms))\b.{0,80}\b(?:cancer|infection|fracture|disease|disorder|condition|overdose|poisoning)\b/i,
+  /\b(?:this is (?:legal|illegal)|you are legally (?:required|entitled)|the contract is (?:valid|invalid|enforceable|void))\b/i,
+  /\b(?:guaranteed returns?|risk[- ]free investment|cannot lose money|will (?:profit|make money)|certain profit)\b/i,
+];
 const PROHIBITED_GUIDANCE_PATTERNS = [
   /\b(?:share|send|paste|upload|provide|reveal|enter)\b.{0,80}\b(?:password|passcode|pin|one[- ]time code|verification code|otp|seed phrase|private key|api key|access token|session cookie)\b/i,
   /\b(?:password|passcode|pin|one[- ]time code|verification code|otp|seed phrase|private key|api key|access token|session cookie)\b.{0,80}\b(?:share|send|sent|paste|upload|provide|reveal|enter)\b/i,
@@ -203,11 +214,19 @@ function assertGuideSafety(content: GuideContent, request: GuideRequest) {
     throw new UnsafeGuideOutputError("prohibited-output");
   }
 
+  if (content.clarificationQuestion && (content.confidence > 0.35 || content.steps.length > 0 || content.completionChecks.length > 0)) {
+    throw new UnsafeGuideOutputError("actionable-clarification");
+  }
+
   const requestContext = [request.intent, request.goal, request.title, request.url, request.selection, request.pageContext]
     .filter((value): value is string => Boolean(value))
     .join(" ");
   const highStakes = HIGH_STAKES_PATTERN.test(`${requestContext} ${guideText(content)}`);
   if (!highStakes) return;
+
+  if (DEFINITIVE_HIGH_STAKES_PATTERNS.some((pattern) => pattern.test(guideText(content)))) {
+    throw new UnsafeGuideOutputError("definitive-high-stakes-claim");
+  }
 
   const hasStopCondition = content.warnings.some((warning) => STOP_CONDITION_PATTERN.test(warning));
   const everyStepNamesRisk = content.steps.every((step) => Boolean(step.risk?.trim()));
@@ -219,7 +238,7 @@ function assertGuideSafety(content: GuideContent, request: GuideRequest) {
 function trustedSources(request: GuideRequest) {
   if (!request.url) return [];
   const hostname = new URL(request.url).hostname;
-  const label = (request.title || hostname || "Source page").slice(0, 160);
+  const label = `Provided page (${hostname || "link"})`.slice(0, 160);
   return [{ label, url: request.url }];
 }
 

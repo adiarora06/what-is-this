@@ -142,6 +142,11 @@ const BROWSER_SYSTEM_INSTRUCTIONS = [
 
 const HIGH_STAKES_PATTERN = /\b(?:medical|medication|dose|diagnos(?:is|e|ed|ing)|injury|poison|electrical|voltage|wiring|mains|energized|gas|chemical|fire|weapon|explosive|structural|vehicle|brake|legal|financial|bank|investment|tax|account[- ]security|password|passcode|mfa|2fa|seed phrase|private key|api key|access token)\b/i;
 const STOP_CONDITION_PATTERN = /\b(?:stop|do not|don't|never|avoid|disconnect|call|contact|emergency|professional|qualified|licensed|manufacturer|support)\b/i;
+const DEFINITIVE_HIGH_STAKES_PATTERNS = [
+  /\b(?:you have|the diagnosis is|this (?:proves|confirms))\b.{0,80}\b(?:cancer|infection|fracture|disease|disorder|condition|overdose|poisoning)\b/i,
+  /\b(?:this is (?:legal|illegal)|you are legally (?:required|entitled)|the contract is (?:valid|invalid|enforceable|void))\b/i,
+  /\b(?:guaranteed returns?|risk[- ]free investment|cannot lose money|will (?:profit|make money)|certain profit)\b/i,
+];
 const PROHIBITED_GUIDANCE_PATTERNS = [
   /\b(?:share|send|paste|upload|provide|reveal|enter)\b.{0,80}\b(?:password|passcode|pin|one[- ]time code|verification code|otp|seed phrase|private key|api key|access token|session cookie)\b/i,
   /\b(?:password|passcode|pin|one[- ]time code|verification code|otp|seed phrase|private key|api key|access token|session cookie)\b.{0,80}\b(?:share|send|paste|upload|provide|reveal|enter|sent)\b/i,
@@ -336,6 +341,9 @@ function assertGuideSafety(result, request) {
   if (prohibited) {
     throw new GuideAdapterError("The on-device result did not pass safety checks. Reframe the request or seek qualified help.", "UNSAFE_GUIDE");
   }
+  if (result.clarificationQuestion && (result.confidence > 0.35 || result.steps.length > 0 || result.completionChecks.length > 0)) {
+    throw new GuideAdapterError("The on-device result mixed a clarification request with actionable guidance, so it was not shown.", "UNSAFE_GUIDE");
+  }
 
   const allText = [
     request.goal,
@@ -347,6 +355,9 @@ function assertGuideSafety(result, request) {
     renderedText,
   ].filter(Boolean).join(" ");
   if (!HIGH_STAKES_PATTERN.test(allText)) return result;
+  if (DEFINITIVE_HIGH_STAKES_PATTERNS.some((pattern) => pattern.test(renderedText))) {
+    throw new GuideAdapterError("The on-device result made a definitive high-stakes claim, so it was not shown.", "UNSAFE_GUIDE");
+  }
   const hasStopCondition = result.warnings.some((warning) => STOP_CONDITION_PATTERN.test(warning));
   const everyStepNamesRisk = result.steps.every((step) => Boolean(step.risk));
   if (!hasStopCondition || !everyStepNamesRisk) {
@@ -441,7 +452,6 @@ export function createPreviewGuide(requestInput) {
       },
     ],
     warnings: ["Preview mode does not analyze image pixels. Do not use this placeholder result for safety-critical decisions."],
-    clarificationQuestion: request.goal ? undefined : "What outcome would make this guide useful?",
     completionChecks: ["The capture is focused.", "The goal is specific.", "The chosen processing mode matches your privacy preference."],
     sources: request.url ? [{ label: request.title || "Captured page", url: request.url }] : [],
     processing: { provider: "local", model: "deterministic-preview" },
@@ -552,11 +562,6 @@ export function endpointForBackendOrigin(value = TRUSTED_BACKEND_ORIGIN) {
     throw new GuideAdapterError("This build only trusts the production guide API origin.", "ENDPOINT_UNAVAILABLE");
   }
   return `${TRUSTED_BACKEND_ORIGIN}/api/guide`;
-}
-
-export function originPermissionForBackend(value = TRUSTED_BACKEND_ORIGIN) {
-  endpointForBackendOrigin(value);
-  return `${TRUSTED_BACKEND_ORIGIN}/*`;
 }
 
 export async function runCloudGuide(requestInput, options = {}) {

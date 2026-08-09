@@ -1,5 +1,6 @@
 import { confidenceLabel } from "@/lib/catalog-match";
-import type { ObjectCard, StoryboardBoard } from "@/lib/types";
+import { GUIDE_INTENT_DETAILS, isGuideImageDataUrl } from "@/lib/guide-client";
+import type { GuideIntent, ObjectCard, StoryboardBoard } from "@/lib/types";
 
 type Props = {
   card: ObjectCard;
@@ -25,6 +26,7 @@ type Props = {
   onCorrectionNotes: (value: string) => void;
   onFeedbackPhotos: (value: boolean) => void;
   onTags: (value: string[]) => void;
+  onStartGuide: (intent: Exclude<GuideIntent, "identify">) => void;
 };
 
 export function ResultView(props: Props) {
@@ -113,6 +115,25 @@ export function ResultView(props: Props) {
             <button className="primaryButton" onClick={props.onSave} disabled={props.saved}>{props.saved ? "Saved" : "Save object"}</button>
           </section>
         )}
+
+        {props.card.verified && !props.isDemo ? (
+          <section className="guideContinuation" aria-labelledby="continue-heading">
+            <div>
+              <p className="eyebrow">Keep going</p>
+              <h2 id="continue-heading">What should we do with this?</h2>
+              <p>{isGuideImageDataUrl(props.card.image)
+                ? "Reuse this confirmed image—no recapture needed. You will review the goal and privacy mode before anything is sent."
+                : "Continue from the confirmed details—no recapture required. This cloud-saved preview is not re-uploaded; add a new photo if visual detail matters."}</p>
+            </div>
+            <div className="continuationGrid">
+              {(["explain", "troubleshoot", "compare", "guide"] as const).map((intent) => (
+                <button key={intent} className="secondaryButton" onClick={() => props.onStartGuide(intent)}>
+                  {GUIDE_INTENT_DETAILS[intent].label}
+                </button>
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         <details className="detailsPanel">
           <summary>Clues, uses, and care</summary>

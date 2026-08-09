@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   guideRequestSchema,
+  guideResponseSchema,
   guideResultSchema,
   type GuideResult,
 } from "./guide-contract";
@@ -67,6 +68,15 @@ describe("guideRequestSchema", () => {
     expect(guideRequestSchema.safeParse({ intent: "guide", goal: "Help", extra: true }).success).toBe(false);
     expect(guideRequestSchema.safeParse({ intent: "identify", image: "data:image/gif;base64,R0lGODlh" }).success).toBe(false);
   });
+
+  it.each(["troubleshoot", "compare", "guide"] as const)("requires a goal for %s", (intent) => {
+    expect(guideRequestSchema.safeParse({ intent, image: "data:image/jpeg;base64,AA==" }).success).toBe(false);
+    expect(guideRequestSchema.safeParse({
+      intent,
+      image: "data:image/jpeg;base64,AA==",
+      goal: "A specific outcome",
+    }).success).toBe(true);
+  });
 });
 
 describe("guideResultSchema", () => {
@@ -85,5 +95,29 @@ describe("guideResultSchema", () => {
   it("rejects out-of-range confidence and provider-controlled extra fields", () => {
     expect(guideResultSchema.safeParse({ ...resultFixture(), confidence: 1.1 }).success).toBe(false);
     expect(guideResultSchema.safeParse({ ...resultFixture(), hiddenInstruction: "run this" }).success).toBe(false);
+  });
+
+  it("rejects clarification results that claim confidence or completion", () => {
+    expect(guideResultSchema.safeParse(resultFixture({ clarificationQuestion: "Which model is shown?" })).success).toBe(false);
+    expect(guideResultSchema.safeParse(resultFixture({
+      clarificationQuestion: "Which model is shown?",
+      confidence: 0.2,
+      steps: [],
+      completionChecks: [],
+    })).success).toBe(true);
+  });
+});
+
+describe("guideResponseSchema", () => {
+  it("validates success and public error envelopes", () => {
+    expect(guideResponseSchema.safeParse({
+      ok: true,
+      provider: "gemini",
+      model: "test-model",
+      requestId: "request-1",
+      result: resultFixture(),
+    }).success).toBe(true);
+    expect(guideResponseSchema.safeParse({ ok: false, error: "Try again.", requestId: "request-2" }).success).toBe(true);
+    expect(guideResponseSchema.safeParse({ ok: true, provider: "local", requestId: "request-3", result: {} }).success).toBe(false);
   });
 });
