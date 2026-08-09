@@ -9,6 +9,7 @@ test("scan, saved, and settings navigation is accessible", async ({ page }) => {
   await page.getByRole("button", { name: /Saved/ }).click();
   await expect(page.getByRole("heading", { name: "Saved objects" })).toBeVisible();
   await expect(page.getByRole("searchbox", { name: "Search saved objects" })).toBeVisible();
+  await expect(page.getByRole("list", { name: "How saved references work" })).toBeVisible();
 
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
@@ -29,6 +30,21 @@ test("mobile controls meet minimum touch size", async ({ page }, testInfo) => {
       .map(({ label, rect }) => ({ label, width: Math.round(rect.width), height: Math.round(rect.height) })),
   );
   expect(undersized).toEqual([]);
+});
+
+test("the saved example previews without changing the library", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: /Saved/ }).click();
+  await expect(page.getByRole("button", { name: /Saved/ })).toContainText("0");
+
+  await page.getByRole("button", { name: "Preview an example" }).click();
+  await expect(page.getByRole("heading", { name: "What Is This? app icon" })).toBeFocused();
+  await expect(page.getByText("Nothing here is saved.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save object" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Share result" })).toHaveCount(0);
+
+  await page.getByRole("button", { name: /Saved/ }).click();
+  await expect(page.getByRole("button", { name: /Saved/ })).toContainText("0");
 });
 
 test("mobile primary actions are not covered by navigation", async ({ page }, testInfo) => {

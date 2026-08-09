@@ -25,3 +25,11 @@ export function friendlyScanError(error: unknown) {
   }
   return "Identification did not finish. Retry or choose another recognition mode in Settings.";
 }
+
+export function friendlyCloudStatus(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  if (/verification|turnstile/i.test(message)) {
+    return "Cloud verification is unavailable. On-device mode remains available.";
+  }
+  return "Cloud recognition is unavailable. On-device mode remains available.";
+}

@@ -1,12 +1,14 @@
-# What Is This? Mobile
+# What Is This?
 
-A private-first, phone-ready object identifier for Vercel.
+A private-first visual identifier and contextual guide for phones, desktops, and Chrome.
 
 The app captures or uploads one image, identifies the main object, asks the person to confirm or correct the result, and saves verified objects into searchable boards. It can run entirely on-device for free, or use an optional cloud provider for broader recognition.
 
 ## Architecture
 
 - **Next.js on Vercel**: focused scan, result, saved-library, and settings views plus a hardened `/api/identify` proxy.
+- **Contextual guide API**: a shared, validated `/api/guide` contract for identify, explain, troubleshoot, compare, and step-by-step guide requests.
+- **Chrome side-panel companion**: an unpacked Manifest V3 extension in `apps/extension` that captures the visible tab after a user gesture, supports manual cropping, and defaults to a private preview.
 - **Private on-device vision**: integrity-checked MobileNetV2 classification, barcode detection, and optional OCR loaded only when needed. ONNX Runtime's pinned WASM files are copied from the installed package and served from the app origin.
 - **Gemini vision provider**: high-accuracy image understanding when `GEMINI_API_KEY` is set.
 - **Python classifier service**: lightweight ONNX MobileNetV2 backend for Render's low-memory free/small instances.
@@ -22,6 +24,12 @@ The server's default `ACCURACY_PROVIDER=auto` behavior is Gemini first when a ke
 The Vision engine selector is strict: choosing Gemini returns a visible Gemini error instead of silently using the classifier. **Best available** is the only mode that falls back between providers.
 
 The production API validates JPEG/PNG/WebP payloads, caps decoded images at 3 MB, applies a best-effort per-instance rate limit, times out external providers, and emits request/provider events to Vercel logs. The classifier runs as a non-root container and requires a strong shared bearer token; optional Cloudflare Turnstile verification protects remote inference quota. Phone uploads are resized before scanning and saved images are stored as smaller thumbnails.
+
+## Try The Chrome Extension
+
+The extension is intentionally separate from the deployed website while sharing its guide response shape. Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select `apps/extension`; see [`apps/extension/README.md`](apps/extension/README.md) for the processing modes and privacy boundaries.
+
+The local preview and supported Chrome on-device AI modes do not send screenshots to the guide server. Cloud upload is disabled in the MVP manifest until an extension-safe Turnstile/auth handoff and explicit downstream-provider consent are complete.
 
 ## Run Locally
 
@@ -68,6 +76,8 @@ GEMINI_MODEL=gemini-2.5-flash
 VISION_BACKEND_URL=http://127.0.0.1:8010
 VISION_BACKEND_TOKEN=the-same-generated-token
 ALLOW_OPENAI_FALLBACK=false
+GUIDE_PROVIDER=auto
+GUIDE_OPENAI_MODEL=gpt-5.6-luna
 ```
 
 ## Deploy To Vercel
@@ -159,6 +169,7 @@ Use **Yes, correct** or **Correct it** after each scan. The app records the outc
 
 ```bash
 npm test
+npm run test:extension
 npm run typecheck
 npm run build
 node_modules/.bin/playwright install chromium

@@ -37,7 +37,8 @@ import {
   type LocalPreferences,
 } from "@/lib/local-store";
 import { purchaseLinksFor, shoppingRecommendedForCategory } from "@/lib/links";
-import { friendlyScanError } from "@/lib/public-error";
+import { friendlyCloudStatus, friendlyScanError } from "@/lib/public-error";
+import { demoCard } from "@/lib/demo-card";
 import type { AccuracyFeedback, CatalogEntry, IdentificationProvider, IdentifyResponse, ObjectCard, StoryboardBoard } from "@/lib/types";
 
 const SettingsView = dynamic(() => import("@/components/settings-view"), {
@@ -141,6 +142,7 @@ export default function Home() {
   const [correctionCategory, setCorrectionCategory] = useState("");
   const [correctionNotes, setCorrectionNotes] = useState("");
   const [saved, setSaved] = useState(false);
+  const [isDemo, setIsDemo] = useState(false);
   const [turnstileReady, setTurnstileReady] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [availableProviders, setAvailableProviders] = useState<IdentificationProvider[]>(["device"]);
@@ -181,24 +183,22 @@ export default function Home() {
   useEffect(() => {
     let cancelled = false;
     void fetch("/api/health", { cache: "no-store" })
-      .then(async (response) => ({ response, payload: (await response.json()) as { ok?: boolean; availableProviders?: string[]; error?: string; backendError?: string; accuracyProvider?: string } }))
+      .then(async (response) => ({ response, payload: (await response.json()) as { ok?: boolean; availableProviders?: string[]; error?: string } }))
       .then(({ response, payload }) => {
         if (cancelled) return;
         const remote = (payload.availableProviders || []).filter((provider): provider is IdentificationProvider => provider === "gemini" || provider === "classifier");
         const hasRemoteProvider = Boolean(response.ok && payload.ok && remote.length > 0);
-        const healthDetail = payload.error === "No vision provider is available."
-          ? "No cloud provider is configured. On-device recognition is ready."
-          : payload.error || payload.backendError;
+        const healthDetail = friendlyCloudStatus(payload.error);
         setRemoteProviderAvailable(hasRemoteProvider);
         setAvailableProviders(Array.from(new Set(["device", ...(hasRemoteProvider ? ["auto" as const, ...remote] : [])])) as IdentificationProvider[]);
         setBackendHealth(response.ok && payload.ok
-          ? { ok: true, label: "Cloud vision ready", detail: payload.accuracyProvider ? `Preferred provider: ${payload.accuracyProvider}` : undefined }
-          : { ok: false, label: "Private fallback ready", detail: healthDetail });
+          ? { ok: true, label: "Cloud recognition ready", detail: "On-device mode is also available." }
+          : { ok: false, label: "Cloud recognition unavailable", detail: healthDetail });
       })
       .catch(() => {
         setRemoteProviderAvailable(false);
         setAvailableProviders(["device"]);
-        setBackendHealth({ ok: false, label: "Private mode available", detail: "Cloud vision status is unavailable." });
+        setBackendHealth({ ok: false, label: "Cloud status unavailable", detail: "On-device mode remains available." });
       });
     return () => { cancelled = true; };
   }, []);
@@ -402,6 +402,7 @@ export default function Home() {
     setProgress(0.86);
     setStatus("Reading the image…");
     setSaved(false);
+    setIsDemo(false);
     try {
       const localVision = await import("@/lib/local-vision");
       const barcode = await localVision.detectBarcode(image);
@@ -578,7 +579,7 @@ export default function Home() {
 
   function resetScan() {
     requestControllerRef.current?.abort();
-    setCard(null); setCurrentImage(null); setShowResult(false); setSaved(false); setProgress(0); setScanState("idle"); setContext("");
+    setCard(null); setCurrentImage(null); setShowResult(false); setSaved(false); setIsDemo(false); setProgress(0); setScanState("idle"); setContext("");
     setModelMessage(undefined); setStatus("Ready for another object.");
   }
 
@@ -815,6 +816,7 @@ export default function Home() {
           correctionNotes={correctionNotes}
           saveFeedbackPhotos={preferences.saveFeedbackPhotos}
           saved={saved}
+          isDemo={isDemo}
           onConfirm={confirmCard}
           onCorrect={() => void correctCard()}
           onSave={() => void saveCard()}
@@ -842,6 +844,7 @@ export default function Home() {
           onView={(item) => {
             setCard(item);
             setSaved(true);
+            setIsDemo(false);
             setView("scan");
             setShowResult(true);
             window.scrollTo({ top: 0 });
@@ -850,6 +853,16 @@ export default function Home() {
           onRemove={(item) => void removeCard(item)}
           onClearBoard={() => void clearBoard()}
           onScan={() => changeView("scan")}
+          onPreviewExample={() => {
+            setCard(demoCard);
+            setCurrentImage(demoCard.image);
+            setSaved(false);
+            setIsDemo(true);
+            setView("scan");
+            setShowResult(true);
+            setStatus("Previewing an example. Nothing here is saved.");
+            window.scrollTo({ top: 0 });
+          }}
         />
       )}
       {view === "settings" && (

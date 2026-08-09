@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { friendlyScanError } from "@/lib/public-error";
+import { friendlyCloudStatus, friendlyScanError } from "@/lib/public-error";
 
 describe("friendlyScanError", () => {
   it("does not expose a WebAssembly runtime exception", () => {
@@ -15,5 +15,13 @@ describe("friendlyScanError", () => {
 
   it("maps unknown failures to a recoverable message", () => {
     expect(friendlyScanError(new Error("secret provider payload"))).toContain("No recognition provider");
+  });
+});
+
+describe("friendlyCloudStatus", () => {
+  it("never exposes provider configuration details", () => {
+    const message = friendlyCloudStatus("Classifier authentication needs a shared token of at least 24 characters.");
+    expect(message).toBe("Cloud recognition is unavailable. On-device mode remains available.");
+    expect(message).not.toMatch(/classifier|token|authentication|24/i);
   });
 });

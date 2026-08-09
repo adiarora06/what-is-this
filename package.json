@@ -14,6 +14,7 @@
     "prestart": "node scripts/ensure-port.mjs 3000 && npm run prepare:ort",
     "start": "next start --hostname 127.0.0.1 --port 3000",
     "test": "vitest run",
+    "test:extension": "npm --prefix apps/extension run verify",
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit"
   },
@@ -38,7 +39,7 @@
     "vitest": "^4.1.10"
   },
   "overrides": {
-    "postcss": "8.5.23",
+    "postcss": "8.5.26",
     "sharp": "0.35.3"
   }
 }

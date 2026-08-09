@@ -23,7 +23,11 @@ describe("verifyTurnstile", () => {
   it("requires a client token when the secret is configured", async () => {
     vi.stubEnv("TURNSTILE_SECRET_KEY", "test-secret");
     vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "test-site-key");
-    await expect(verifyTurnstile(undefined, "127.0.0.1", "request-3")).resolves.toMatchObject({ ok: false, status: 403 });
+    await expect(verifyTurnstile(undefined, "127.0.0.1", "request-3")).resolves.toEqual({
+      ok: false,
+      status: 403,
+      error: "Complete the security check before continuing.",
+    });
   });
 
   it("accepts a successful identify-action verification", async () => {
@@ -31,5 +35,26 @@ describe("verifyTurnstile", () => {
     vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "test-site-key");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true, action: "identify" }) }));
     await expect(verifyTurnstile("client-token", "127.0.0.1", "request-4")).resolves.toEqual({ ok: true });
+  });
+
+  it("can verify a route-specific action without changing the identify default", async () => {
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "test-secret");
+    vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "test-site-key");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true, action: "guide" }) }));
+
+    await expect(verifyTurnstile("client-token", "127.0.0.1", "request-5", "guide")).resolves.toEqual({ ok: true });
+    await expect(verifyTurnstile("client-token", "127.0.0.1", "request-6")).resolves.toMatchObject({ ok: false, status: 403 });
+  });
+
+  it("rejects a success response that omits the bound action", async () => {
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "test-secret");
+    vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "test-site-key");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) }));
+
+    await expect(verifyTurnstile("client-token", "127.0.0.1", "request-7", "guide")).resolves.toEqual({
+      ok: false,
+      status: 403,
+      error: "Security verification expired. Try again.",
+    });
   });
 });

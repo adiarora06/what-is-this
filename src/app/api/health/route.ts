@@ -25,8 +25,9 @@ async function checkGemini(): Promise<GeminiHealth> {
   let value: GeminiHealth;
   try {
     // Validate the configured key/model without spending generation tokens.
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}?key=${apiKey}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}`, {
       method: "GET",
+      headers: { "x-goog-api-key": apiKey },
       cache: "no-store",
       signal: AbortSignal.timeout(3_000),
     });
@@ -104,20 +105,26 @@ export async function GET() {
     !turnstileOk ? "Scan verification is not fully configured." : undefined,
   ].filter(Boolean);
 
-  return Response.json(
-    {
-      ok,
+  if (!ok) {
+    console.warn(JSON.stringify({
+      event: "vision.health.degraded",
       accuracyProvider,
       geminiConfigured: gemini.configured,
       geminiValid: gemini.valid,
-      geminiError: gemini.error,
-      availableProviders,
-      backendConfigured: classifier.configured,
-      backendError: classifier.error,
-      backend: classifier.backend,
+      classifierConfigured: classifier.configured,
+      classifierReady: classifier.ok,
       turnstileRequired,
       turnstileConfigured,
-      error: ok ? undefined : errors.join(" ") || "No vision provider is available.",
+      errors,
+    }));
+  }
+
+  return Response.json(
+    {
+      ok,
+      status: ok ? "cloud-ready" : "private-ready",
+      availableProviders,
+      error: ok ? undefined : "Cloud recognition is unavailable. On-device mode remains available.",
     },
     { status: ok ? 200 : 503, headers: { "Cache-Control": "no-store" } },
   );

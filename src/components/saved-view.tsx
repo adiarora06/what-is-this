@@ -13,10 +13,12 @@ type Props = {
   onRemove: (card: ObjectCard) => void;
   onClearBoard: () => void;
   onScan: () => void;
+  onPreviewExample: () => void;
 };
 
 export function SavedView(props: Props) {
   const activeBoard = props.boards.find((board) => board.id === props.activeBoardId) || props.boards[0];
+  const totalItems = props.boards.reduce((sum, board) => sum + board.items.length, 0);
   const normalizedQuery = props.query.trim().toLowerCase();
   const items = (activeBoard?.items || []).filter((item) => {
     if (props.favoritesOnly && !item.favorite) return false;
@@ -40,9 +42,21 @@ export function SavedView(props: Props) {
         </div>
         {!items.length ? (
           <div className="emptyState">
-            <h2>{activeBoard?.items.length ? "No matches here" : "This board is empty"}</h2>
-            <p>{activeBoard?.items.length ? "Try a broader search or turn off the favorite filter." : "Confirmed scans you save will appear here."}</p>
-            {!activeBoard?.items.length && <button className="primaryButton" onClick={props.onScan}>Scan your first object</button>}
+            <h2>{activeBoard?.items.length ? "No matches here" : totalItems ? "This board is empty" : "Build your first reference"}</h2>
+            <p>{activeBoard?.items.length ? "Try a broader search or turn off the favorite filter." : totalItems ? "Save a confirmed scan to this board when you want to find it again." : "A saved reference keeps the answer, visible clues, care guidance, and your corrections together."}</p>
+            {!totalItems && (
+              <ol className="emptySteps" aria-label="How saved references work">
+                <li><strong>Capture</strong><span>Take or upload a clear photo.</span></li>
+                <li><strong>Confirm</strong><span>Check the answer or teach the app a correction.</span></li>
+                <li><strong>Reuse</strong><span>Save it to a searchable board for later.</span></li>
+              </ol>
+            )}
+            {!activeBoard?.items.length && (
+              <div className="emptyActions">
+                {!totalItems && <button className="secondaryButton" onClick={props.onPreviewExample}>Preview an example</button>}
+                <button className="primaryButton" onClick={props.onScan}>{totalItems ? "Scan an object" : "Scan your first object"}</button>
+              </div>
+            )}
           </div>
         ) : (
           <div className="storyboardGrid">

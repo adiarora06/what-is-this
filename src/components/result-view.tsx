@@ -11,6 +11,7 @@ type Props = {
   correctionNotes: string;
   saveFeedbackPhotos: boolean;
   saved: boolean;
+  isDemo?: boolean;
   onConfirm: () => void;
   onCorrect: () => void;
   onSave: () => void;
@@ -35,7 +36,7 @@ export function ResultView(props: Props) {
         <header className="resultHero">
           {props.card.image && <img src={props.card.image} alt="Scanned object" />}
           <div>
-            <p className="eyebrow">Identification</p>
+            <p className="eyebrow">{props.isDemo ? "Example result" : "Identification"}</p>
             <h1 id="result-heading" tabIndex={-1}>{props.card.objectName}</h1>
             <div className="resultMeta">
               <span className={`confidenceBadge ${confidence.tone}`}>{confidence.label} · {Math.round(props.card.confidence * 100)}%</span>
@@ -66,7 +67,15 @@ export function ResultView(props: Props) {
           </div>
         )}
 
-        <section className={`verificationPanel ${props.card.verified ? "confirmed" : ""}`} aria-labelledby="verify-heading">
+        {props.isDemo ? (
+          <section className="verificationPanel confirmed" aria-labelledby="verify-heading">
+            <div>
+              <h2 id="verify-heading">See the complete flow</h2>
+              <p>This example is not saved and does not affect your learning history. Scan your own image to confirm, correct, and organize a real result.</p>
+            </div>
+            <button className="primaryButton" onClick={props.onScanAnother}>Scan your own image</button>
+          </section>
+        ) : <section className={`verificationPanel ${props.card.verified ? "confirmed" : ""}`} aria-labelledby="verify-heading">
           <div>
             <h2 id="verify-heading">{props.card.verified ? "Confirmed" : "Does this look right?"}</h2>
             <p>{props.card.verified ? "It is ready to save." : "Your confirmation improves future matches on this device."}</p>
@@ -91,9 +100,9 @@ export function ResultView(props: Props) {
               </div>
             </>
           )}
-        </section>
+        </section>}
 
-        {props.card.verified && (
+        {props.card.verified && !props.isDemo && (
           <section className="savePanel" aria-labelledby="save-heading">
             <h2 id="save-heading">Save for later</h2>
             <div className="fieldRow">
@@ -124,8 +133,8 @@ export function ResultView(props: Props) {
         )}
 
         <div className="resultActions">
-          <button className="secondaryButton" onClick={props.onShare}>Share result</button>
-          <button className="scanButton" onClick={props.onScanAnother}>Scan another</button>
+          {!props.isDemo && <button className="secondaryButton" onClick={props.onShare}>Share result</button>}
+          <button className="scanButton" onClick={props.onScanAnother}>{props.isDemo ? "Scan your own image" : "Scan another"}</button>
         </div>
         <p className="sourceLine">Source: {props.card.source || "vision provider"}. Always confirm safety-critical identifications independently.</p>
       </article>

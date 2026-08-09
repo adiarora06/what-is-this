@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>What Is This? Guide</title>
+    <link rel="stylesheet" href="sidepanel.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true">?</span>
+          <div>
+            <p class="eyebrow">What Is This?</p>
+            <p class="brand-name">Tab guide</p>
+          </div>
+        </div>
+        <span id="privacy-pill" class="privacy-pill">Private preview</span>
+      </header>
+
+      <main>
+        <section class="intro" aria-labelledby="main-heading">
+          <p class="eyebrow">See it. Focus it. Understand it.</p>
+          <h1 id="main-heading">What do you need from this tab?</h1>
+          <p>Capture only the visible area, trim it to what matters, then choose how it is processed.</p>
+        </section>
+
+        <section class="panel capture-panel" aria-labelledby="capture-heading">
+          <div class="section-heading">
+            <div>
+              <p class="step-label">1 · Capture</p>
+              <h2 id="capture-heading">Visible tab</h2>
+            </div>
+            <button id="reset-button" class="text-button" type="button" disabled>Start over</button>
+          </div>
+
+          <div id="capture-empty" class="empty-state">
+            <div class="empty-visual" aria-hidden="true"><span></span></div>
+            <strong>Nothing captured yet</strong>
+            <p>Chrome shares one screenshot only after you invoke the extension on a tab.</p>
+          </div>
+
+          <div id="preview-region" class="preview-region" hidden>
+            <div class="preview-frame">
+              <canvas id="preview-canvas" role="img" aria-label="Preview of the visible tab. Drag to select an optional crop." aria-describedby="crop-help"></canvas>
+              <div id="preview-loading" class="preview-loading">Preparing preview…</div>
+            </div>
+            <p id="crop-help" class="helper-text">Optional: drag across the preview, or use Select center crop with a keyboard.</p>
+            <div class="button-row compact">
+              <button id="center-crop-button" class="secondary-button" type="button">Select center crop</button>
+              <button id="apply-crop-button" class="secondary-button" type="button" disabled>Use crop</button>
+              <button id="restore-image-button" class="secondary-button" type="button" disabled>Restore full capture</button>
+            </div>
+            <div id="source-summary" class="source-summary"></div>
+          </div>
+
+          <button id="capture-button" class="primary-button wide" type="button" disabled>Capture visible tab</button>
+          <p id="capture-status" class="status-line" role="status" aria-live="polite">Ready when the tab is.</p>
+        </section>
+
+        <section class="panel request-panel" aria-labelledby="request-heading">
+          <div class="section-heading">
+            <div>
+              <p class="step-label">2 · Ask</p>
+              <h2 id="request-heading">Shape the answer</h2>
+            </div>
+          </div>
+
+          <label class="field">
+            <span>What do you need?</span>
+            <select id="intent-select" disabled>
+              <option value="identify">Identify what this is</option>
+              <option value="explain">Explain what I’m seeing</option>
+              <option value="troubleshoot">Troubleshoot a problem</option>
+              <option value="compare">Compare with another option</option>
+              <option value="guide">Guide me step by step</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span id="goal-label">Optional clue</span>
+            <textarea id="goal-input" maxlength="500" placeholder="What should the answer focus on?" disabled></textarea>
+            <span class="field-footer"><small id="goal-help">A short clue can improve the result.</small><small id="goal-count">0/500</small></span>
+          </label>
+
+          <fieldset class="mode-fieldset">
+            <legend>How should this be processed?</legend>
+
+            <label class="mode-option">
+              <input type="radio" name="adapter" value="preview" checked disabled>
+              <span><strong>Private preview</strong><small>Structured placeholder; never analyzes image pixels.</small></span>
+            </label>
+
+            <label class="mode-option" id="browser-ai-option">
+              <input type="radio" name="adapter" value="browser-ai" disabled>
+              <span><strong>Chrome on-device AI</strong><small id="browser-ai-status">Checking this device…</small></span>
+            </label>
+
+            <label class="mode-option">
+              <input type="radio" name="adapter" value="cloud-api" disabled>
+              <span><strong>Trusted guide API · coming later</strong><small>Disabled until the extension has a secure verification handoff.</small></span>
+            </label>
+          </fieldset>
+
+          <div id="data-boundary" class="data-boundary">
+            <strong>Stays in this extension</strong>
+            <span>The screenshot is kept only for this Chrome session.</span>
+          </div>
+
+          <button id="generate-button" class="scan-button wide" type="button" disabled>Make guide</button>
+          <p id="generate-status" class="status-line" role="status" aria-live="polite"></p>
+        </section>
+
+        <section id="result-panel" class="panel result-panel" aria-labelledby="result-heading" hidden>
+          <div class="result-kicker">
+            <p class="step-label">3 · Review</p>
+            <span id="confidence-badge" class="confidence-badge"></span>
+          </div>
+          <h2 id="result-heading" tabindex="-1"></h2>
+          <p id="result-goal" class="result-goal"></p>
+          <p id="result-summary" class="result-summary"></p>
+
+          <section id="warnings-section" class="warning-card" aria-labelledby="warnings-heading" hidden>
+            <h3 id="warnings-heading">Before you continue</h3>
+            <ul id="warnings-list"></ul>
+          </section>
+
+          <section id="clarification-section" class="clarification-card" aria-labelledby="clarification-heading" hidden>
+            <h3 id="clarification-heading">One useful question</h3>
+            <p id="clarification-text"></p>
+          </section>
+
+          <section id="recommendation-section" class="recommendation-card" aria-labelledby="recommendation-heading">
+            <p class="mini-label">Recommended next move</p>
+            <h3 id="recommendation-heading"></h3>
+            <p id="recommendation-reason"></p>
+          </section>
+
+          <section id="evidence-section" class="result-section" aria-labelledby="evidence-heading" hidden>
+            <h3 id="evidence-heading">What supports this</h3>
+            <ul id="evidence-list" class="evidence-list"></ul>
+          </section>
+
+          <section id="steps-section" class="result-section" aria-labelledby="steps-heading" hidden>
+            <h3 id="steps-heading">Steps</h3>
+            <ol id="steps-list" class="steps-list"></ol>
+          </section>
+
+          <section id="checks-section" class="result-section" aria-labelledby="checks-heading" hidden>
+            <h3 id="checks-heading">You’re done when</h3>
+            <ul id="checks-list" class="check-list"></ul>
+          </section>
+
+          <details id="alternatives-section" class="details-card" hidden>
+            <summary>Other approaches</summary>
+            <ul id="alternatives-list"></ul>
+          </details>
+
+          <details id="sources-section" class="details-card" hidden>
+            <summary>Sources</summary>
+            <ul id="sources-list"></ul>
+          </details>
+
+          <p id="processing-line" class="processing-line"></p>
+        </section>
+      </main>
+
+      <footer>
+        Screenshots are session-only. No remote scripts are loaded, Incognito is disabled, and this MVP does not upload captures.
+      </footer>
+    </div>
+
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

@@ -94,3 +94,13 @@ export type IdentifyResponse =
       error: string;
       requestId?: string;
     };
+
+export type {
+  GuideContent,
+  GuideExecutionProvider,
+  GuideIntent,
+  GuideProvider,
+  GuideRequest,
+  GuideResponse,
+  GuideResult,
+} from "./guide-contract";
