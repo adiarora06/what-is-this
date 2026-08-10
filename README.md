@@ -4,6 +4,41 @@ A private-first visual identifier and contextual guide for phones, desktops, and
 
 The app captures or uploads one image, identifies the main object, asks the person to confirm or correct the result, and saves verified objects into searchable boards. It can run entirely on-device for free, or use an optional cloud provider for broader recognition.
 
+[**Open the live app (on-device mode)**](https://what-is-this-mobile.vercel.app)
+
+![What Is This scan screen with private on-device recognition, camera and upload controls, and mobile navigation](docs/product-overview.png)
+
+## What It Does
+
+- Identifies an object from a camera capture or uploaded image, then asks the user to confirm or correct the result.
+- Saves verified objects into searchable boards with categories, notes, and tags.
+- Runs privately in the browser with an integrity-checked MobileNetV2 model, barcode detection, and optional OCR.
+- Adds broader cloud recognition through Gemini or a separately deployed FastAPI classifier when configured.
+- Works as an installable PWA and can optionally sync private boards through Supabase.
+
+## Tech Stack
+
+| Layer | Technologies |
+| --- | --- |
+| Web app | Next.js 16 App Router, React 19, TypeScript, PWA, IndexedDB |
+| On-device vision | ONNX Runtime Web, MobileNetV2, BarcodeDetector, Tesseract OCR |
+| Optional cloud services | Gemini, FastAPI, Python, ONNX Runtime, Supabase Auth/Postgres/Storage |
+| Delivery and quality | Vercel, Render, Docker, Turnstile, Vitest, Playwright, axe, GitHub Actions |
+
+## Quick Start
+
+On-device identification needs no API key or Python service. The model downloads from the app origin the first time it is used.
+
+```bash
+git clone https://github.com/adiarora06/what-is-this.git
+cd what-is-this
+npm ci
+cp .env.example .env.local
+npm run dev
+```
+
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000). Node.js 22 or newer is required.
+
 ## Architecture
 
 - **Next.js on Vercel**: focused scan, result, saved-library, and settings views plus a hardened `/api/identify` proxy.
@@ -31,9 +66,9 @@ The extension is intentionally separate from the deployed website while sharing 
 
 The public privacy policy is available at [`/privacy`](https://what-is-this-mobile.vercel.app/privacy), and copy-ready Chrome Web Store fields are maintained in [`apps/extension/STORE_LISTING.md`](apps/extension/STORE_LISTING.md).
 
-## Run Locally
+## Optional Local Classifier
 
-The app works without a backend when **On this device** is selected in Settings. To test the optional Python fallback, generate a strong token and use the same value for both services:
+To test the Python classifier fallback, generate a strong token and use the same value for both services:
 
 ```bash
 openssl rand -hex 32
@@ -56,18 +91,7 @@ Warm the classifier:
 curl -X POST -H "Authorization: Bearer $VISION_BACKEND_TOKEN" http://127.0.0.1:8010/warmup
 ```
 
-Start the phone app:
-
-```bash
-cd ..
-npm install
-cp .env.example .env.local
-npm run dev
-```
-
-The application opens at `http://127.0.0.1:3000`. Startup prints the listener details and stops with an actionable diagnostic if port 3000 is already occupied.
-
-For accurate local testing, set a Gemini key in `.env.local`. Keep the classifier URL as fallback:
+Return to the repository root and add the classifier URL and token to `.env.local`. For broader cloud recognition, add a Gemini key as well:
 
 ```text
 ACCURACY_PROVIDER=auto
