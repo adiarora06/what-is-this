@@ -8,6 +8,7 @@ const manifest = JSON.parse(await readFile(new URL("../manifest.json", import.me
 
 test("manifest is MV3 with only the permissions used by the MVP", () => {
   assert.equal(manifest.manifest_version, 3);
+  assert.equal(manifest.version, "0.2.0");
   assert.equal(manifest.incognito, "not_allowed");
   assert.deepEqual(manifest.permissions, ["activeTab", "contextMenus", "sidePanel", "storage"]);
   assert.equal("optional_host_permissions" in manifest, false);
@@ -45,6 +46,11 @@ test("side panel loads no remote scripts or inline executable code", async () =>
   assert.match(html, /id="intent-select"[^>]*disabled/);
   assert.match(html, /id="open-web-settings-button"[^>]*>Open web settings<\/button>/);
   assert.match(html, /Opening Settings sends no screenshot, page address, selection, or account token\./);
+  assert.match(html, /id="clarification-form"[^>]*class="clarification-form"/);
+  assert.match(html, /id="clarification-input"[\s\S]*maxlength="500"[\s\S]*required/);
+  assert.match(html, /aria-describedby="clarification-text clarification-help clarification-count clarification-error"/);
+  assert.match(html, /id="clarification-submit"[^>]*type="submit"[^>]*disabled>Update guide<\/button>/);
   assert.doesNotMatch(javascript, /chrome\.permissions\.request/);
   assert.match(javascript, /\?view=settings&source=extension/);
+  assert.match(javascript, /elements\["clarification-form"\]\.addEventListener\("submit"/);
 });

@@ -134,6 +134,24 @@
           <section id="clarification-section" class="clarification-card" aria-labelledby="clarification-heading" hidden>
             <h3 id="clarification-heading">One useful question</h3>
             <p id="clarification-text"></p>
+            <form id="clarification-form" class="clarification-form">
+              <label class="field" for="clarification-input">
+                <span>Your answer</span>
+                <textarea
+                  id="clarification-input"
+                  maxlength="500"
+                  required
+                  aria-describedby="clarification-text clarification-help clarification-count clarification-error"
+                  placeholder="Add the exact label, symptom, option, or outcome."
+                ></textarea>
+              </label>
+              <span class="field-footer">
+                <small id="clarification-help">Your reply stays in the same processing mode as this guide.</small>
+                <small id="clarification-count">0/500</small>
+              </span>
+              <p id="clarification-error" class="inline-error" role="alert" hidden></p>
+              <button id="clarification-submit" class="primary-button wide" type="submit" disabled>Update guide</button>
+            </form>
           </section>
 
           <section id="recommendation-section" class="recommendation-card" aria-labelledby="recommendation-heading">

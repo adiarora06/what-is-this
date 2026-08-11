@@ -16,6 +16,7 @@ import {
   GuideAdapterError,
   TRUSTED_BACKEND_ORIGIN,
   buildGuideRequest,
+  clarificationContext,
   detectLanguageModel,
   runGuide,
 } from "./guide-adapter.js";
@@ -28,6 +29,8 @@ const elements = Object.fromEntries([
   "open-web-settings-button", "generate-button", "generate-status",
   "result-panel", "confidence-badge", "result-heading", "result-goal", "result-summary",
   "warnings-section", "warnings-list", "clarification-section", "clarification-text",
+  "clarification-form", "clarification-input", "clarification-count", "clarification-error",
+  "clarification-submit",
   "recommendation-heading", "recommendation-reason", "evidence-section", "evidence-list",
   "steps-section", "steps-list", "checks-section", "checks-list", "alternatives-section",
   "alternatives-list", "sources-section", "sources-list", "processing-line",
@@ -214,6 +217,8 @@ function appendTextList(node, items) {
 function renderResult(result) {
   const outerWarnings = session.responseWarnings || [];
   const warnings = [...result.warnings, ...outerWarnings];
+  const clarification = result.clarificationQuestion || "";
+  const clarificationBusy = session.status === "generating" && Boolean(clarification);
   elements["result-heading"].textContent = result.subject;
   elements["result-goal"].textContent = `${result.intent} · ${result.goal}`;
   elements["result-summary"].textContent = result.summary;
@@ -221,8 +226,23 @@ function renderResult(result) {
 
   elements["warnings-section"].hidden = warnings.length === 0;
   appendTextList(elements["warnings-list"], warnings);
-  elements["clarification-section"].hidden = !result.clarificationQuestion;
-  elements["clarification-text"].textContent = result.clarificationQuestion || "";
+  elements["clarification-section"].hidden = !clarification;
+  elements["clarification-text"].textContent = clarification;
+  if (clarification) {
+    if (document.activeElement !== elements["clarification-input"]) {
+      elements["clarification-input"].value = session.clarificationAnswer;
+    }
+    elements["clarification-input"].disabled = clarificationBusy;
+    elements["clarification-input"].setAttribute("aria-invalid", String(Boolean(session.clarificationError)));
+    elements["clarification-count"].textContent = `${session.clarificationAnswer.length}/500`;
+    elements["clarification-error"].textContent = session.clarificationError || "";
+    elements["clarification-error"].hidden = !session.clarificationError;
+    elements["clarification-submit"].disabled = clarificationBusy
+      || !session.clarificationAnswer.trim()
+      || settings.adapter !== "browser-ai"
+      || !modelCapability.supported;
+    elements["clarification-submit"].textContent = clarificationBusy ? "Updating…" : "Update guide";
+  }
   elements["recommendation-heading"].textContent = result.recommendedAction.title;
   elements["recommendation-reason"].textContent = result.recommendedAction.reason;
 
@@ -327,7 +347,7 @@ function render() {
         : "Ready when the tab is.";
   setStatus(elements["capture-status"], captureMessage, Boolean(session.captureError) || (session.status === "error" && !hasImage));
   const generateMessage = session.status === "generating"
-    ? "Making your guide…"
+    ? session.result?.clarificationQuestion ? "Updating your guide…" : "Making your guide…"
     : session.status === "error" && hasImage
       ? session.error
       : session.status === "complete"
@@ -425,6 +445,8 @@ async function applyCrop() {
       ...session,
       status: "ready",
       result: null,
+      clarificationAnswer: "",
+      clarificationError: null,
       generationId: null,
       captureError: null,
       error: null,
@@ -457,6 +479,8 @@ async function restoreImage() {
       ...session,
       status: "ready",
       result: null,
+      clarificationAnswer: "",
+      clarificationError: null,
       generationId: null,
       captureError: null,
       error: null,
@@ -471,18 +495,27 @@ async function restoreImage() {
   }
 }
 
-async function generateGuide() {
+async function generateGuide({ clarification = false } = {}) {
   const startingSession = session;
   const startingDraftId = startingSession.draft?.id;
   const adapter = settings.adapter;
+  const clarificationQuestion = clarification ? startingSession.result?.clarificationQuestion : "";
+  const clarificationAnswer = clarification ? startingSession.clarificationAnswer.trim() : "";
   let operation = null;
   try {
+    if (clarification && (!clarificationQuestion || !clarificationAnswer)) {
+      throw new GuideAdapterError("Answer the clarification question before updating the guide.", "CLARIFICATION_REQUIRED");
+    }
     const source = startingSession.draft?.source || {};
+    const pageContext = [
+      pageContextFor(source),
+      clarification ? clarificationContext(clarificationQuestion, clarificationAnswer) : "",
+    ].filter(Boolean).join("\n");
     const request = buildGuideRequest({
       intent: startingSession.intent,
       image: optimizedImageDataUrl(),
       goal: startingSession.goal,
-      pageContext: pageContextFor(source),
+      pageContext,
       selection: source.selection,
       url: source.pageUrl,
       title: source.pageTitle,
@@ -494,10 +527,12 @@ async function generateGuide() {
     session = normalizeSession({
       ...startingSession,
       status: "generating",
-      result: null,
+      result: clarification ? startingSession.result : null,
       error: null,
-      responseWarnings: [],
-      requestId: null,
+      clarificationError: null,
+      clarificationAnswer: clarification ? startingSession.clarificationAnswer : "",
+      responseWarnings: clarification ? startingSession.responseWarnings : [],
+      requestId: clarification ? startingSession.requestId : null,
       generationId: operation.generationId,
     });
     render();
@@ -536,9 +571,12 @@ async function generateGuide() {
       requestId: response.requestId,
       generationId: null,
       error: null,
+      clarificationAnswer: "",
+      clarificationError: null,
     }), currentWindowId);
     render();
-    elements["result-heading"].focus();
+    if (response.result.clarificationQuestion) elements["clarification-input"].focus();
+    else elements["result-heading"].focus();
     elements["result-panel"].scrollIntoView({ block: "start", behavior: "smooth" });
   } catch (error) {
     if (operation) {
@@ -554,12 +592,30 @@ async function generateGuide() {
     } else if (session.draft?.id !== startingDraftId) {
       return;
     }
+    const message = error instanceof Error ? error.message : "The guide could not be made.";
+    if (clarification && session.draft?.id === startingDraftId && (session.result || startingSession.result)) {
+      session = normalizeSession({
+        ...session,
+        status: "error",
+        result: session.result || startingSession.result,
+        responseWarnings: session.responseWarnings?.length ? session.responseWarnings : startingSession.responseWarnings,
+        requestId: session.requestId || startingSession.requestId,
+        generationId: null,
+        error: message,
+        clarificationAnswer: startingSession.clarificationAnswer,
+        clarificationError: message,
+      });
+      await saveSession(session, currentWindowId).catch(() => undefined);
+      render();
+      elements["clarification-input"].focus();
+      return;
+    }
     session = normalizeSession({
       ...session,
       status: "error",
       result: null,
       generationId: null,
-      error: error instanceof Error ? error.message : "The guide could not be made.",
+      error: message,
     });
     await saveSession(session, currentWindowId).catch(() => undefined);
     render();
@@ -618,20 +674,57 @@ elements["apply-crop-button"].addEventListener("click", () => void applyCrop());
 elements["center-crop-button"].addEventListener("click", selectCenterCrop);
 elements["restore-image-button"].addEventListener("click", () => void restoreImage());
 elements["generate-button"].addEventListener("click", () => void generateGuide());
+elements["clarification-form"].addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!session.clarificationAnswer.trim()) {
+    session = normalizeSession({ ...session, clarificationError: "Add an answer before updating the guide." });
+    render();
+    elements["clarification-input"].focus();
+    queueSessionSave();
+    return;
+  }
+  void generateGuide({ clarification: true });
+});
+elements["clarification-input"].addEventListener("input", (event) => {
+  if (session.status === "capturing" || session.status === "generating") return;
+  session = normalizeSession({
+    ...session,
+    clarificationAnswer: event.target.value,
+    clarificationError: null,
+  });
+  renderResult(session.result);
+  queueSessionSave();
+});
 elements["open-web-settings-button"].addEventListener("click", () => {
   void chrome.tabs.create({ url: `${TRUSTED_BACKEND_ORIGIN}/?view=settings&source=extension` });
 });
 
 elements["intent-select"].addEventListener("change", (event) => {
   if (session.status === "capturing" || session.status === "generating") return;
-  session = normalizeSession({ ...session, intent: event.target.value, result: null, error: null, status: session.draft?.image ? "ready" : "idle" });
+  session = normalizeSession({
+    ...session,
+    intent: event.target.value,
+    result: null,
+    clarificationAnswer: "",
+    clarificationError: null,
+    error: null,
+    status: session.draft?.image ? "ready" : "idle",
+  });
   renderGoalPolicy();
   queueSessionSave();
 });
 
 elements["goal-input"].addEventListener("input", (event) => {
   if (session.status === "capturing" || session.status === "generating") return;
-  session = normalizeSession({ ...session, goal: event.target.value, result: null, error: null, status: session.draft?.image ? "ready" : "idle" });
+  session = normalizeSession({
+    ...session,
+    goal: event.target.value,
+    result: null,
+    clarificationAnswer: "",
+    clarificationError: null,
+    error: null,
+    status: session.draft?.image ? "ready" : "idle",
+  });
   renderGoalPolicy();
   queueSessionSave();
 });

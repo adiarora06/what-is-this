@@ -8,7 +8,7 @@ The app captures or uploads one image, identifies the main object, asks the pers
 
 - **Next.js on Vercel**: focused scan, result, saved-library, and settings views plus a hardened `/api/identify` proxy.
 - **Contextual guide API**: a shared, validated `/api/guide` contract for identify, explain, troubleshoot, compare, and step-by-step guide requests.
-- **Chrome side-panel companion**: an unpacked Manifest V3 extension in `apps/extension` that captures the visible tab after a user gesture, supports manual cropping, and defaults to a private preview.
+- **Chrome side-panel companion**: an unpacked Manifest V3 extension in `apps/extension` that captures the visible tab after a user gesture, supports manual cropping, defaults to a private preview, and lets supported Chrome on-device AI clarify an answer without another capture.
 - **Private on-device vision**: integrity-checked MobileNetV2 classification, barcode detection, and optional OCR loaded only when needed. ONNX Runtime's pinned WASM files are copied from the installed package and served from the app origin.
 - **Gemini vision provider**: high-accuracy image understanding when `GEMINI_API_KEY` is set.
 - **Python classifier service**: lightweight ONNX MobileNetV2 backend for Render's low-memory free/small instances.

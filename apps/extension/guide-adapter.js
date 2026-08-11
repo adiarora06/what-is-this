@@ -137,6 +137,7 @@ const BROWSER_SYSTEM_INSTRUCTIONS = [
   "Never ask for passwords, passcodes, verification codes, API keys, private keys, seed phrases, or money transfers.",
   "Never bypass safeguards, provide destructive commands, or give dangerous disassembly instructions.",
   "Put hazards and stop conditions in warnings. Every high-stakes procedural step must name its risk.",
+  "If one critical detail is missing, ask exactly one actionable clarificationQuestion, set confidence to 0.35 or lower, and return no steps or completionChecks. Otherwise omit clarificationQuestion.",
   "recommendedAction is display text only; no action is executed.",
 ].join("\n");
 
@@ -171,6 +172,22 @@ export class GuideAdapterError extends Error {
 
 function text(value, maxLength, fallback = "") {
   return typeof value === "string" ? value.trim().slice(0, maxLength) || fallback : fallback;
+}
+
+function compactText(value, maxLength) {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, maxLength) : "";
+}
+
+export function clarificationContext(question, answer) {
+  const cleanQuestion = compactText(question, 500);
+  const cleanAnswer = compactText(answer, 500);
+  if (!cleanQuestion || !cleanAnswer) {
+    throw new GuideAdapterError(
+      "Answer the clarification question before updating the guide.",
+      "CLARIFICATION_REQUIRED",
+    );
+  }
+  return `Clarification requested: ${cleanQuestion}\nUser answer: ${cleanAnswer}`.slice(0, 1_100);
 }
 
 function requiredText(value, maxLength, fieldName) {

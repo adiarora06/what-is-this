@@ -30,6 +30,8 @@ export function emptySession() {
     draft: null,
     intent: "identify",
     goal: "",
+    clarificationAnswer: "",
+    clarificationError: null,
     result: null,
     responseWarnings: [],
     requestId: null,
@@ -82,6 +84,10 @@ export function normalizeSession(value) {
     status: allowedStatuses.has(value.status) ? value.status : base.status,
     intent,
     goal: shortText(value.goal, 500),
+    clarificationAnswer: shortText(value.clarificationAnswer, 500),
+    clarificationError: typeof value.clarificationError === "string"
+      ? shortText(value.clarificationError, 500) || null
+      : null,
     draft,
     responseWarnings: Array.isArray(value.responseWarnings)
       ? value.responseWarnings.filter((item) => typeof item === "string").slice(0, 8)
@@ -144,14 +150,18 @@ export function isCurrentGeneration(value, { draftId, generationId }) {
 export function recoverInterruptedGeneration(value) {
   const current = normalizeSession(value);
   if (current.status !== "generating") return current;
+  const hasClarificationToResume = typeof current.result?.clarificationQuestion === "string"
+    && Boolean(current.result.clarificationQuestion.trim());
   return normalizeSession({
     ...current,
     status: "error",
-    result: null,
-    responseWarnings: [],
-    requestId: null,
+    result: hasClarificationToResume ? current.result : null,
+    responseWarnings: hasClarificationToResume ? current.responseWarnings : [],
+    requestId: hasClarificationToResume ? current.requestId : null,
     generationId: null,
-    error: "The previous guide was interrupted when the panel closed. Try again.",
+    error: hasClarificationToResume
+      ? "The clarification update was interrupted when the panel closed. Your answer was kept; try updating the guide again."
+      : "The previous guide was interrupted when the panel closed. Try again.",
   });
 }
 

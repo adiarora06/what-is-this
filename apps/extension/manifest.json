@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "incognito": "not_allowed",
   "name": "What Is This? Guide",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Capture the visible tab and turn it into a private, structured guide.",
   "minimum_chrome_version": "116",
   "icons": {

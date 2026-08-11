@@ -31,6 +31,16 @@ test("captured page URLs do not retain queries, fragments, or credentials", () =
   assert.equal(sanitizePageUrl(`https://example.com/${"a".repeat(3_000)}`).length, 2_048);
 });
 
+test("clarification answers are session-only, bounded, and cleared by a fresh session", () => {
+  const normalized = normalizeSession({ clarificationAnswer: "a".repeat(700), clarificationError: "e".repeat(700) });
+  assert.equal(normalized.clarificationAnswer.length, 500);
+  assert.equal(normalized.clarificationError.length, 500);
+  assert.equal(emptySession().clarificationAnswer, "");
+  assert.equal(emptySession().clarificationError, null);
+  assert.equal(normalizeSession({ clarificationAnswer: 123 }).clarificationAnswer, "");
+  assert.equal(normalizeSession({ clarificationError: 123 }).clarificationError, null);
+});
+
 function usableSession(overrides = {}) {
   return normalizeSession({
     ...emptySession(),
@@ -98,6 +108,29 @@ test("a panel reload recovers an abandoned guide generation", () => {
   assert.equal(recovered.result, null);
   assert.match(recovered.error, /interrupted/i);
   assert.equal(recoverInterruptedGeneration(usableSession()).status, "complete");
+});
+
+test("an interrupted clarification update retains the question, answer, and prior request context", () => {
+  const result = {
+    subject: "Existing result",
+    clarificationQuestion: "Which model number is visible?",
+  };
+  const recovered = recoverInterruptedGeneration(usableSession({
+    status: "generating",
+    generationId: "clarification-generation",
+    clarificationAnswer: "Model A-100",
+    result,
+    responseWarnings: ["Keep the device disconnected."],
+    requestId: "request-clarification",
+  }));
+
+  assert.equal(recovered.status, "error");
+  assert.equal(recovered.generationId, null);
+  assert.deepEqual(recovered.result, result);
+  assert.equal(recovered.clarificationAnswer, "Model A-100");
+  assert.deepEqual(recovered.responseWarnings, ["Keep the device disconnected."]);
+  assert.equal(recovered.requestId, "request-clarification");
+  assert.match(recovered.error, /answer was kept/i);
 });
 
 test("session storage is isolated per Chrome window and ignores the legacy global record", async (context) => {

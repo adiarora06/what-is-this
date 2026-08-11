@@ -584,6 +584,31 @@ code {
   border: 1px solid #ead79e;
 }
 
+.clarification-form {
+  border-top: 1px solid rgba(112, 83, 11, 0.2);
+  display: grid;
+  gap: 8px;
+  margin-top: 3px;
+  padding-top: 10px;
+}
+
+.clarification-form textarea {
+  min-height: 74px;
+}
+
+.clarification-form textarea[aria-invalid="true"] {
+  border-color: var(--warning);
+}
+
+.clarification-card .inline-error {
+  background: var(--warning-soft);
+  border-radius: 8px;
+  color: var(--warning);
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 8px;
+}
+
 .recommendation-card {
   background: #edf8f1;
   border: 1px solid #c9e8d4;
