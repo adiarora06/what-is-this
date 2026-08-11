@@ -1,10 +1,12 @@
-const CACHE_NAME = "what-is-this-shell-v3";
+const CACHE_NAME = "what-is-this-shell-v4";
 const APP_SHELL = ["/"];
 const MAX_CACHED_ASSETS = 40;
 
 async function trimCache(cache) {
   const keys = await cache.keys();
-  await Promise.all(keys.slice(0, Math.max(0, keys.length - MAX_CACHED_ASSETS)).map((request) => cache.delete(request)));
+  const appShellUrls = new Set(APP_SHELL.map((path) => new URL(path, self.location.origin).href));
+  const removable = keys.filter((request) => !appShellUrls.has(request.url));
+  await Promise.all(removable.slice(0, Math.max(0, keys.length - MAX_CACHED_ASSETS)).map((request) => cache.delete(request)));
 }
 
 self.addEventListener("install", (event) => {
@@ -34,12 +36,19 @@ self.addEventListener("fetch", (event) => {
   if (request.mode === "navigate") {
     event.respondWith(
       fetch(request)
-        .then((response) => {
-          const copy = response.clone();
-          void caches.open(CACHE_NAME).then((cache) => cache.put("/", copy));
+        .then(async (response) => {
+          if (response.ok && response.type === "basic") {
+            try {
+              const cache = await caches.open(CACHE_NAME);
+              await cache.put(request, response.clone());
+              await trimCache(cache);
+            } catch {
+              // A full or unavailable cache must never replace a valid network page.
+            }
+          }
           return response;
         })
-        .catch(() => caches.match("/")),
+        .catch(async () => (await caches.match(request)) || caches.match("/")),
     );
     return;
   }

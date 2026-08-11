@@ -12,11 +12,12 @@ vi.mock("openai", () => ({
 
 const endpoint = "http://localhost/api/guide";
 
-function request(body: unknown, headers: Record<string, string> = {}) {
+function request(body: unknown, headers: Record<string, string> = {}, signal?: AbortSignal) {
   return new Request(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-real-ip": crypto.randomUUID(), ...headers },
     body: JSON.stringify(body),
+    signal,
   });
 }
 
@@ -199,6 +200,199 @@ describe("POST /api/guide", () => {
     expect(payload.error).toBe("The generated guidance did not pass safety checks.");
   });
 
+  it("rejects medication dosing even when the provider supplies plausible warnings and risks", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "");
+    vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const unsafeContent = {
+      ...providerContent(),
+      subject: "Acetaminophen tablets",
+      recommendedAction: {
+        title: "Take two tablets",
+        reason: "Use 1000 mg every six hours for the symptom shown.",
+      },
+      steps: [{
+        id: "take-dose",
+        title: "Take the dose",
+        instruction: "Swallow two 500 mg acetaminophen tablets now.",
+        completionCheck: "The tablets were taken.",
+        risk: "Taking too much acetaminophen can cause overdose and serious injury.",
+      }],
+      warnings: ["Stop and contact a pharmacist if the label or dose is uncertain."],
+      completionChecks: ["The dose was taken."],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(unsafeContent) }] } }],
+    })));
+
+    const response = await POST(request({ intent: "guide", goal: "Explain the package", provider: "gemini" }));
+    const payload = await response.json();
+
+    expect(response.status).toBe(502);
+    expect(payload.error).toBe("The generated guidance did not pass safety checks.");
+    expect(JSON.stringify(payload)).not.toMatch(/1000 mg|take two tablets/i);
+  });
+
+  it("rejects a medication schedule that omits the dosage form and unit", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "");
+    vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    for (const title of [
+      "Take two every six hours",
+      "Do not take anything, take two every six hours",
+    ]) {
+      const unsafeContent = {
+        ...providerContent(),
+        recommendedAction: {
+          title,
+          reason: "This schedule should address the symptom.",
+        },
+        steps: [],
+        warnings: ["Stop and contact a qualified pharmacist if medication safety is uncertain."],
+        completionChecks: [],
+      };
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+        candidates: [{ content: { parts: [{ text: JSON.stringify(unsafeContent) }] } }],
+      })));
+
+      const response = await POST(request({
+        intent: "explain",
+        goal: "What dose of acetaminophen should I take?",
+        provider: "gemini",
+      }));
+
+      expect(response.status).toBe(502);
+      expect(JSON.stringify(await response.json())).not.toMatch(/take two every six hours/i);
+    }
+  });
+
+  it("rejects placeholder medication safeguards", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "");
+    vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const unsafeContent = {
+      ...providerContent(),
+      subject: "Acetaminophen tablets",
+      steps: [{ ...providerContent().steps[0], risk: "None" }],
+      warnings: ["Never skip this step."],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(unsafeContent) }] } }],
+    })));
+
+    const response = await POST(request({ intent: "explain", goal: "Explain this package", provider: "gemini" }));
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "The generated guidance did not pass safety checks.",
+    });
+  });
+
+  it("rejects sentence-shaped placeholder safeguards", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "");
+    vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const unsafeContent = {
+      ...providerContent(),
+      subject: "Acetaminophen package",
+      steps: [{ ...providerContent().steps[0], risk: "No special risk is expected." }],
+      warnings: ["There is no known risk here."],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(unsafeContent) }] } }],
+    })));
+
+    const response = await POST(request({ intent: "explain", goal: "Explain this package", provider: "gemini" }));
+
+    expect(response.status).toBe(502);
+  });
+
+  it("does not let a clinician referral excuse a direct medication change", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "");
+    vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const unsafeContent = {
+      ...providerContent(),
+      subject: "Warfarin prescription",
+      recommendedAction: {
+        title: "Stop taking warfarin now and call your doctor",
+        reason: "The medication should be stopped before professional review.",
+      },
+      warnings: ["Stop and contact a qualified clinician if medication safety is uncertain."],
+      steps: [{
+        ...providerContent().steps[0],
+        instruction: "Stop taking warfarin before calling your doctor.",
+        risk: "Changing warfarin without medical supervision can cause serious bleeding or injury.",
+      }],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(unsafeContent) }] } }],
+    })));
+
+    const response = await POST(request({ intent: "guide", goal: "Review this prescription", provider: "gemini" }));
+
+    expect(response.status).toBe(502);
+  });
+
+  it("allows a medication question whose only action is to consult a pharmacist", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "");
+    vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "");
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const referralContent = {
+      ...providerContent(),
+      subject: "Acetaminophen package",
+      recommendedAction: {
+        title: "Ask a pharmacist whether to take acetaminophen",
+        reason: "A pharmacist can review the label and personal risk factors.",
+      },
+      steps: [],
+      warnings: ["Don’t take the medicine until a pharmacist confirms it is appropriate."],
+      completionChecks: [],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(referralContent) }] } }],
+    })));
+
+    const response = await POST(request({ intent: "explain", goal: "Explain this medicine", provider: "gemini" }));
+
+    expect(response.status).toBe(200);
+  });
+
+  it("does not treat electronic tablets, ordinary grams, or inventory units as medication context", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "");
+    vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "");
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const ordinaryContent = {
+      ...providerContent(),
+      subject: "Electronic tablet inventory",
+      summary: "The shelf contains electronic tablets beside a 500 gram calibration sample.",
+      recommendedAction: { title: "Count the devices", reason: "A count will reconcile the inventory." },
+      steps: [{
+        id: "count-devices",
+        title: "Count the tablets",
+        instruction: "Start the Android tablet and change its settings, then record the inventory units.",
+        completionCheck: "The device count matches the inventory sheet.",
+        risk: "None",
+      }],
+      warnings: [],
+      completionChecks: ["All electronic tablets are counted."],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(ordinaryContent) }] } }],
+    })));
+
+    const response = await POST(request({ intent: "explain", goal: "Count electronic tablets and inventory units", provider: "gemini" }));
+
+    expect(response.status).toBe(200);
+  });
+
   it("rejects unsafe guidance hidden in clarification and completion fields", async () => {
     vi.stubEnv("GEMINI_API_KEY", "test-key");
     vi.stubEnv("TURNSTILE_SECRET_KEY", "");
@@ -313,6 +507,108 @@ describe("POST /api/guide", () => {
     expect(response.status).toBe(502);
     await expect(response.json()).resolves.toMatchObject({
       error: "The generated guidance did not pass safety checks.",
+    });
+  });
+
+  it("replaces a provider-controlled recommendation while clarification is pending", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "");
+    vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "");
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const clarificationContent = {
+      ...providerContent(),
+      confidence: 0.2,
+      recommendedAction: {
+        title: "Take two acetaminophen tablets",
+        reason: "Do this before answering the model question.",
+      },
+      steps: [],
+      clarificationQuestion: "Which exact model is shown?",
+      completionChecks: [],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      candidates: [{ content: { parts: [{ text: JSON.stringify(clarificationContent) }] } }],
+    })));
+
+    const response = await POST(request({ intent: "explain", goal: "Explain this control", provider: "gemini" }));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.result.recommendedAction).toEqual({
+      title: "Answer the clarification question",
+      reason: "One specific detail is needed before reliable next steps can be recommended.",
+    });
+    expect(JSON.stringify(payload)).not.toMatch(/acetaminophen|before answering/i);
+  });
+
+  it("budgets automatic remote providers and reaches the local fallback within the route deadline", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
+    vi.stubEnv("ALLOW_OPENAI_FALLBACK", "true");
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "");
+    vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const timeoutDurations: number[] = [];
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((duration) => {
+      timeoutDurations.push(duration);
+      return duration <= 10_000
+        ? AbortSignal.abort(new DOMException("Provider budget elapsed.", "TimeoutError"))
+        : new AbortController().signal;
+    });
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async (_url: string, options: RequestInit) => {
+      expect(options.signal?.aborted).toBe(true);
+      throw options.signal?.reason;
+    }));
+    openAIResponsesCreate.mockImplementation(async (_input: unknown, options?: { signal?: AbortSignal }) => {
+      expect(options?.signal?.aborted).toBe(true);
+      throw options?.signal?.reason;
+    });
+
+    const response = await POST(request({ intent: "explain", goal: "Explain this status light" }));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.provider).toBe("local");
+    expect(payload.warnings).toHaveLength(2);
+    expect(timeoutDurations.filter((duration) => duration <= 10_000)).toEqual([10_000, 10_000]);
+    expect(timeoutDurations.every((duration) => duration < 30_000)).toBe(true);
+  });
+
+  it("aborts the active provider and skips fallback when the client cancels", async () => {
+    vi.stubEnv("GEMINI_API_KEY", "test-key");
+    vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
+    vi.stubEnv("ALLOW_OPENAI_FALLBACK", "true");
+    vi.stubEnv("TURNSTILE_SECRET_KEY", "");
+    vi.stubEnv("NEXT_PUBLIC_TURNSTILE_SITE_KEY", "");
+    const controller = new AbortController();
+    let signalStarted: (signal: AbortSignal) => void = () => undefined;
+    const providerStarted = new Promise<AbortSignal>((resolve) => {
+      signalStarted = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, options: RequestInit) => (
+      new Promise((_resolve, reject) => {
+        const signal = options.signal as AbortSignal;
+        signalStarted(signal);
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      })
+    )));
+
+    const responsePromise = POST(request(
+      { intent: "explain", goal: "Explain this status light" },
+      {},
+      controller.signal,
+    ));
+    const providerSignal = await providerStarted;
+    controller.abort(new DOMException("The page changed.", "AbortError"));
+    const response = await responsePromise;
+
+    expect(providerSignal.aborted).toBe(true);
+    expect(openAIResponsesCreate).not.toHaveBeenCalled();
+    expect(response.status).toBe(499);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: "Guide request was cancelled.",
     });
   });
 

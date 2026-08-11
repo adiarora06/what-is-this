@@ -165,11 +165,14 @@ test("guide clarification keeps warnings first and updates in place", async ({ p
   await page.getByRole("button", { name: "Open Settings" }).click();
   await page.getByRole("combobox", { name: /Recognition mode/ }).selectOption("auto");
   await page.getByRole("button", { name: "Scan", exact: true }).click();
+  await expect(page.getByText(/Cloud processing · Gemini or OpenAI, whichever is available/i)).toBeVisible();
+  await expect(page.getByText(/This app does not retain the request after processing; the selected service handles it under its own data policy/i)).toBeVisible();
   await page.locator('input[type="file"]').setInputFiles({ name: "guide.png", mimeType: "image/png", buffer: onePixelPng });
 
   await expect(page.getByRole("heading", { name: "Visible appliance control panel" })).toBeFocused();
   await expect(page.getByRole("heading", { name: "Before you continue" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "What model number is printed on the label?" })).toBeVisible();
+  await expect(page.locator(".recommendationPanel")).toHaveCount(0);
   const warningBox = await page.locator(".guideWarnings").boundingBox();
   const clarificationBox = await page.locator(".clarificationPanel").boundingBox();
   expect(warningBox).not.toBeNull();
@@ -182,6 +185,7 @@ test("guide clarification keeps warnings first and updates in place", async ({ p
   await expect(page.locator(".clarificationPanel .inlineError")).toContainText("Guided answers are temporarily unavailable");
   await page.getByRole("button", { name: "Update the guide" }).click();
   await expect(page.getByRole("heading", { name: "Visible appliance control panel" })).toBeFocused();
+  await expect(page.locator(".recommendationPanel")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Steps" })).toBeVisible();
   const stepText = await page.locator(".guideSteps li p").allTextContents();
   expect(stepText[0]).toMatch(/^Risk:/);
@@ -287,6 +291,8 @@ test("empty saved previews continue with metadata only and restore the identific
   await page.getByRole("button", { name: "Explain", exact: true }).click();
   await expect(page.getByRole("button", { name: "Back to identification" })).toBeVisible();
   await expect(page.getByText("Confirmed details ready")).toBeVisible();
+  await expect(page.getByText(/Confirmed details only · Gemini or OpenAI, whichever is available/i)).toBeVisible();
+  await expect(page.getByText(/Confirmed text details.*are sent securely to Gemini or OpenAI.*does not retain the request after processing/i)).toBeVisible();
   await page.getByRole("button", { name: "Use confirmed details (no image sent)" }).click();
 
   await expect(page.getByRole("heading", { name: "Saved control panel" })).toBeFocused();

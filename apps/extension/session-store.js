@@ -9,6 +9,58 @@ export const GUIDE_INTENTS = Object.freeze([
   "guide",
 ]);
 
+export class DeferredSessionSaveQueue {
+  constructor(write, options = {}) {
+    if (typeof write !== "function") throw new TypeError("A session writer is required.");
+    this.write = write;
+    this.delay = Number.isFinite(options.delay) ? Math.max(0, options.delay) : 220;
+    this.setTimer = options.setTimer || globalThis.setTimeout;
+    this.clearTimer = options.clearTimer || globalThis.clearTimeout;
+    this.onError = typeof options.onError === "function" ? options.onError : () => undefined;
+    this.timer = null;
+    this.pending = Promise.resolve();
+  }
+
+  schedule(value) {
+    if (this.timer !== null) this.clearTimer(this.timer);
+    this.timer = this.setTimer(() => {
+      this.timer = null;
+      this.pending = this.pending
+        .catch(() => undefined)
+        .then(() => this.write(value))
+        .catch((error) => {
+          try {
+            this.onError(error);
+          } catch {
+            // A status-rendering failure must not leave the queue rejected.
+          }
+        });
+    }, this.delay);
+  }
+
+  async cancelAndWait() {
+    if (this.timer !== null) this.clearTimer(this.timer);
+    this.timer = null;
+    await this.pending.catch(() => undefined);
+  }
+
+  async flush(value) {
+    if (this.timer !== null) this.clearTimer(this.timer);
+    this.timer = null;
+    await this.pending.catch(() => undefined);
+    try {
+      await this.write(value);
+    } catch (error) {
+      try {
+        this.onError(error);
+      } catch {
+        // Preserve the storage failure as the error reported to the caller.
+      }
+      throw error;
+    }
+  }
+}
+
 export function sessionKeyForWindow(windowId) {
   if (!Number.isInteger(windowId) || windowId < 0) {
     throw new TypeError("A valid Chrome window id is required for guide session storage.");
@@ -30,6 +82,7 @@ export function emptySession() {
     requestId: null,
     captureId: null,
     generationId: null,
+    panelRevision: 0,
     captureError: null,
     error: null,
     updatedAt: new Date().toISOString(),
@@ -66,6 +119,9 @@ export function normalizeSession(value) {
     requestId: value.requestId ? shortText(value.requestId, 160) : null,
     captureId: value.captureId ? shortText(value.captureId, 160) : null,
     generationId: value.generationId ? shortText(value.generationId, 160) : null,
+    panelRevision: Number.isSafeInteger(value.panelRevision) && value.panelRevision >= 0
+      ? Math.min(value.panelRevision, Number.MAX_SAFE_INTEGER)
+      : 0,
     captureError: value.captureError ? shortText(value.captureError, 500) : null,
     error: value.error ? shortText(value.error, 500) : null,
   };

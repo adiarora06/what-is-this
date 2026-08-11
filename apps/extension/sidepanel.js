@@ -1,4 +1,5 @@
 import {
+  DeferredSessionSaveQueue,
   isCurrentGeneration,
   loadSession,
   normalizeSession,
@@ -20,7 +21,7 @@ const elements = Object.fromEntries([
   "privacy-pill", "reset-button", "capture-empty", "preview-region", "preview-canvas",
   "preview-loading", "center-crop-button", "apply-crop-button", "restore-image-button", "source-summary",
   "capture-button", "capture-status", "intent-select", "goal-label", "goal-input",
-  "goal-help", "goal-count", "browser-ai-status", "data-boundary", "generate-button", "generate-status",
+  "goal-help", "goal-count", "browser-ai-status", "data-boundary", "generate-button", "cancel-generation-button", "generate-status",
   "result-panel", "confidence-badge", "result-heading", "result-goal", "result-summary",
   "warnings-section", "warnings-list", "clarification-section", "clarification-text",
   "clarification-form", "clarification-input", "clarification-count", "clarification-error",
@@ -40,9 +41,20 @@ let previewImage = null;
 let previewUrl = "";
 let cropRect = null;
 let cropStart = null;
-let saveTimer = null;
 let currentWindowId = null;
 let sessionStorageKey = null;
+let activeGenerationController = null;
+let activeGenerationOperation = null;
+let panelCapturePending = false;
+
+const sessionSaveQueue = new DeferredSessionSaveQueue(
+  ({ value, windowId }) => saveSession(value, windowId),
+  {
+    onError() {
+      setStatus(elements["generate-status"], "The session could not be saved.", true);
+    },
+  },
+);
 
 function setStatus(element, message, isError = false) {
   element.textContent = message || "";
@@ -134,8 +146,8 @@ function modelStatusText() {
     available: "Ready; the screenshot stays on this device.",
     downloadable: "Supported; Chrome downloads its model on first use.",
     downloading: "Chrome is downloading its on-device model.",
-    unavailable: "Unavailable. This requires Chrome 138+ on a supported desktop device.",
-  }[modelCapability.availability] || "Unavailable. This requires Chrome 138+ on a supported desktop device.";
+    unavailable: "Unavailable. Screenshot guides require Chrome 148+ on a supported desktop device.",
+  }[modelCapability.availability] || "Unavailable. Screenshot guides require Chrome 148+ on a supported desktop device.";
 }
 
 function renderModelStatus() {
@@ -259,16 +271,20 @@ function renderResult(result) {
 
 function render() {
   const hasImage = Boolean(session.draft?.image?.dataUrl);
-  const busy = session.status === "capturing" || session.status === "generating";
+  const busy = session.status === "capturing" || session.status === "generating" || panelCapturePending;
   const ready = Number.isInteger(currentWindowId);
   elements["capture-empty"].hidden = hasImage;
   elements["preview-region"].hidden = !hasImage;
-  elements["capture-button"].disabled = !ready || busy;
-  elements["capture-button"].textContent = session.status === "capturing" ? "Capturing…" : hasImage ? "Capture again privately" : "Capture visible tab privately";
-  elements["reset-button"].disabled = !ready || busy || (session.status === "idle" && !session.draft);
+  elements["capture-button"].disabled = !ready || busy || panelCapturePending;
+  elements["capture-button"].textContent = session.status === "capturing" || panelCapturePending ? "Capturing…" : hasImage ? "Capture again privately" : "Capture visible tab privately";
+  elements["reset-button"].disabled = !ready || busy || panelCapturePending || (session.status === "idle" && !session.draft);
   elements["center-crop-button"].disabled = !hasImage || busy;
   elements["restore-image-button"].disabled = !session.draft?.image?.originalDataUrl || busy;
   elements["generate-button"].disabled = !ready || !hasImage || busy || !modelCapability.supported;
+  elements["cancel-generation-button"].hidden = session.status !== "generating";
+  elements["cancel-generation-button"].disabled = session.status !== "generating"
+    || !activeGenerationController
+    || activeGenerationController.signal.aborted;
   elements["intent-select"].disabled = !ready || busy;
   elements["goal-input"].disabled = !ready || busy;
 
@@ -279,7 +295,7 @@ function render() {
   renderSource(session.draft?.source);
   if (hasImage) loadPreview(session.draft.image.dataUrl);
 
-  const captureMessage = session.status === "capturing"
+  const captureMessage = session.status === "capturing" || panelCapturePending
     ? "Capturing the visible area…"
     : session.captureError
       ? session.captureError
@@ -304,10 +320,22 @@ function render() {
 }
 
 function queueSessionSave() {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    void saveSession(session, currentWindowId).catch(() => setStatus(elements["generate-status"], "The session could not be saved.", true));
-  }, 220);
+  sessionSaveQueue.schedule({ value: session, windowId: currentWindowId });
+}
+
+function withPanelEdit(patch) {
+  const nextRevision = Math.min(Number.MAX_SAFE_INTEGER, session.panelRevision + 1);
+  return normalizeSession({ ...session, ...patch, panelRevision: nextRevision });
+}
+
+function applyIncomingSession(value) {
+  const incoming = normalizeSession(value);
+  if (activeGenerationOperation && !isCurrentGeneration(incoming, activeGenerationOperation)) return false;
+  const sameDraft = Boolean(incoming.draft?.id && incoming.draft.id === session.draft?.id);
+  if (sameDraft && !incoming.captureId && incoming.panelRevision < session.panelRevision) return false;
+  session = incoming;
+  render();
+  return true;
 }
 
 function optimizedImageDataUrl() {
@@ -360,6 +388,7 @@ function selectCenterCrop() {
 
 async function applyCrop() {
   if (!previewImage || !cropRect || cropRect.width < 40 || cropRect.height < 40) return;
+  await sessionSaveQueue.cancelAndWait();
   const previousSession = session;
   try {
     const maxDimension = 1_800;
@@ -406,6 +435,7 @@ async function applyCrop() {
 async function restoreImage() {
   const original = session.draft?.image?.originalDataUrl;
   if (!original) return;
+  await sessionSaveQueue.cancelAndWait();
   const previousSession = session;
   try {
     session = normalizeSession({
@@ -434,6 +464,7 @@ async function generateGuide({ clarification = false } = {}) {
   const clarificationQuestion = clarification ? startingSession.result?.clarificationQuestion : "";
   const clarificationAnswer = clarification ? startingSession.clarificationAnswer.trim() : "";
   let operation = null;
+  let generationController = null;
   try {
     if (clarification && (!clarificationQuestion || !clarificationAnswer)) {
       throw new GuideAdapterError("Answer the clarification question before updating the guide.", "CLARIFICATION_REQUIRED");
@@ -447,9 +478,12 @@ async function generateGuide({ clarification = false } = {}) {
     });
     if (session.draft?.id !== startingDraftId) return;
 
-    clearTimeout(saveTimer);
+    const pendingSessionSave = sessionSaveQueue.cancelAndWait();
     operation = { draftId: startingDraftId, generationId: crypto.randomUUID() };
-    session = normalizeSession({
+    generationController = new AbortController();
+    activeGenerationController = generationController;
+    activeGenerationOperation = operation;
+    const generatingSession = normalizeSession({
       ...startingSession,
       status: "generating",
       result: clarification ? startingSession.result : null,
@@ -460,6 +494,7 @@ async function generateGuide({ clarification = false } = {}) {
       requestId: clarification ? startingSession.requestId : null,
       generationId: operation.generationId,
     });
+    session = generatingSession;
     render();
     const guideOptions = {
       onDownloadProgress(progress) {
@@ -467,13 +502,17 @@ async function generateGuide({ clarification = false } = {}) {
           setStatus(elements["generate-status"], `Downloading Chrome’s on-device model… ${Math.round(progress * 100)}%`);
         }
       },
+      signal: generationController.signal,
     };
     // Chrome requires LanguageModel.create() to run directly in the user
     // activation path. Start browser AI before awaiting session persistence.
     const browserResponse = runBrowserGuide(request, guideOptions);
+    void browserResponse.catch(() => undefined);
     try {
-      session = await saveSession(session, currentWindowId);
+      await pendingSessionSave;
+      session = await saveSession(generatingSession, currentWindowId);
     } catch (error) {
+      generationController.abort();
       void browserResponse?.catch(() => undefined);
       operation = null;
       throw error;
@@ -543,6 +582,12 @@ async function generateGuide({ clarification = false } = {}) {
     });
     await saveSession(session, currentWindowId).catch(() => undefined);
     render();
+    elements["generate-button"].focus();
+  } finally {
+    if (activeGenerationController === generationController) {
+      activeGenerationController = null;
+      activeGenerationOperation = null;
+    }
   }
 }
 
@@ -574,20 +619,27 @@ canvas.addEventListener("pointerup", (event) => {
 });
 
 elements["capture-button"].addEventListener("click", async () => {
+  if (panelCapturePending || session.status === "capturing" || session.status === "generating") return;
+  panelCapturePending = true;
   setStatus(elements["capture-status"], "Capturing the visible area…");
-  elements["capture-button"].disabled = true;
+  render();
+  let captureTransportError = "";
   try {
+    await sessionSaveQueue.flush({ value: session, windowId: currentWindowId });
     const response = await chrome.runtime.sendMessage({ type: "CAPTURE_ACTIVE_TAB", windowId: currentWindowId });
-    if (!response?.ok && response?.error) setStatus(elements["capture-status"], response.error, true);
+    if (!response?.ok && response?.error) captureTransportError = response.error;
   } catch (error) {
-    setStatus(elements["capture-status"], error instanceof Error ? error.message : "The tab could not be captured.", true);
-    elements["capture-button"].disabled = !Number.isInteger(currentWindowId);
+    captureTransportError = error instanceof Error ? error.message : "The tab could not be captured.";
+  } finally {
+    panelCapturePending = false;
+    render();
+    if (captureTransportError) setStatus(elements["capture-status"], captureTransportError, true);
   }
 });
 
 elements["reset-button"].addEventListener("click", async () => {
   if (session.status === "capturing" || session.status === "generating") return;
-  clearTimeout(saveTimer);
+  await sessionSaveQueue.cancelAndWait();
   session = await resetSession(currentWindowId);
   previewImage = null;
   previewUrl = "";
@@ -598,6 +650,12 @@ elements["apply-crop-button"].addEventListener("click", () => void applyCrop());
 elements["center-crop-button"].addEventListener("click", selectCenterCrop);
 elements["restore-image-button"].addEventListener("click", () => void restoreImage());
 elements["generate-button"].addEventListener("click", () => void generateGuide());
+elements["cancel-generation-button"].addEventListener("click", () => {
+  if (!activeGenerationController) return;
+  activeGenerationController.abort();
+  elements["cancel-generation-button"].disabled = true;
+  setStatus(elements["generate-status"], "Cancelling guide…");
+});
 elements["clarification-form"].addEventListener("submit", (event) => {
   event.preventDefault();
   if (!session.clarificationAnswer.trim()) {
@@ -611,8 +669,7 @@ elements["clarification-form"].addEventListener("submit", (event) => {
 });
 elements["clarification-input"].addEventListener("input", (event) => {
   if (session.status === "capturing" || session.status === "generating") return;
-  session = normalizeSession({
-    ...session,
+  session = withPanelEdit({
     clarificationAnswer: event.target.value,
     clarificationError: null,
   });
@@ -621,8 +678,7 @@ elements["clarification-input"].addEventListener("input", (event) => {
 });
 elements["intent-select"].addEventListener("change", (event) => {
   if (session.status === "capturing" || session.status === "generating") return;
-  session = normalizeSession({
-    ...session,
+  session = withPanelEdit({
     intent: event.target.value,
     result: null,
     clarificationAnswer: "",
@@ -630,14 +686,13 @@ elements["intent-select"].addEventListener("change", (event) => {
     error: null,
     status: session.draft?.image ? "ready" : "idle",
   });
-  renderGoalPolicy();
+  render();
   queueSessionSave();
 });
 
 elements["goal-input"].addEventListener("input", (event) => {
   if (session.status === "capturing" || session.status === "generating") return;
-  session = normalizeSession({
-    ...session,
+  session = withPanelEdit({
     goal: event.target.value,
     result: null,
     clarificationAnswer: "",
@@ -645,23 +700,21 @@ elements["goal-input"].addEventListener("input", (event) => {
     error: null,
     status: session.draft?.image ? "ready" : "idle",
   });
-  renderGoalPolicy();
+  render();
   queueSessionSave();
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === "session" && sessionStorageKey && changes[sessionStorageKey]) {
-    session = normalizeSession(changes[sessionStorageKey].newValue);
-    render();
+    applyIncomingSession(changes[sessionStorageKey].newValue);
   }
 });
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type !== "GUIDE_SESSION_UPDATED" || message.windowId !== currentWindowId) return;
   void loadSession(currentWindowId).then((value) => {
-    session = value;
-    render();
-  });
+    applyIncomingSession(value);
+  }).catch(() => setStatus(elements["capture-status"], "The updated capture could not be loaded.", true));
 });
 
 async function initialize() {

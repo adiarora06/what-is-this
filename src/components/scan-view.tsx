@@ -23,6 +23,7 @@ type Props = {
   securityNeeded: boolean;
   securityReady: boolean;
   privacyMode: "device" | "remote";
+  cloudProcessorLabel: string;
   modelMessage?: string;
   canRetry: boolean;
   onStartCamera: () => void;
@@ -50,6 +51,20 @@ export function ScanView(props: Props) {
     : props.scanState === "identifying"
       ? guideMode ? "Creating guide…" : "Identifying…"
       : guideMode ? intentDetails.action : "Scan object";
+  const privacyHeading = imageEntryBlocked
+    ? "Image not sent in this mode"
+    : metadataOnlySource
+      ? `Confirmed details only · ${props.cloudProcessorLabel}`
+      : props.privacyMode === "device"
+        ? "Private on this device"
+        : `Cloud processing · ${props.cloudProcessorLabel}`;
+  const privacyDescription = imageEntryBlocked
+    ? "This screen will not send an image while guidance is unavailable."
+    : metadataOnlySource
+      ? `The stored preview is not re-uploaded. Confirmed text details, your goal, and context you add are sent securely to ${props.cloudProcessorLabel}. This app does not retain the request after processing; the selected service handles it under its own data policy.`
+      : props.privacyMode === "device"
+        ? "Your image stays in this browser."
+        : `Your image is sent securely to ${props.cloudProcessorLabel} for ${guideMode ? "guided help" : "identification"}. This app does not retain the request after processing; the selected service handles it under its own data policy.`;
   return (
     <section className="viewStack scanView" aria-labelledby="scan-heading">
       {guideMode && props.onCancelGuideSetup ? (
@@ -128,8 +143,8 @@ export function ScanView(props: Props) {
 
         <div className="cameraSidebar">
           <div className="privacyStrip">
-            <strong>{imageEntryBlocked ? "Image not sent in this mode" : metadataOnlySource ? "Confirmed details only" : props.privacyMode === "device" ? "Private on this device" : "Cloud recognition"}</strong>
-            <span>{imageEntryBlocked ? "This screen will not send an image while guidance is unavailable." : metadataOnlySource ? "The stored preview is not re-uploaded. Only confirmed text details, your goal, and context you add are sent." : props.privacyMode === "device" ? "Your image stays in this browser." : guideMode ? "Your image is sent securely to create this guide, then discarded." : "Your image is sent securely for identification, then discarded."}</span>
+            <strong>{privacyHeading}</strong>
+            <span>{privacyDescription}</span>
           </div>
 
           <div className="scanActions">

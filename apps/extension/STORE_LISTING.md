@@ -38,7 +38,7 @@ The packaging command accepts only Manifest V3 version 0.3.0 with the `activeTab
 > • The extension does not separately access the page URL, page title, DOM, form fields, cookies, password manager, or browsing history.
 > • A screenshot can contain sensitive information that is visible on the page; review the page and crop before processing it.
 >
-> Requires Chrome 138 or newer on a supported desktop device. Chrome may need to download its on-device model before the first guide can be created.
+> Requires Chrome 148 or newer on a supported desktop device because screenshot guidance uses the multimodal Prompt API. Chrome may need to download its on-device model before the first guide can be created.
 
 **Single purpose**
 
@@ -114,7 +114,7 @@ No account, payment, credentials, special website, or external service is requir
 
 **Environment**
 
-- Chrome 138 or newer.
+- Chrome 148 or newer.
 - Supported desktop platform: Windows 10/11, macOS 13 or newer, Linux, or Chromebook Plus.
 - Chrome’s Prompt API hardware requirements must be met. Google currently documents at least 22 GB of free profile-volume storage and either more than 4 GB of GPU memory or at least 16 GB of RAM and four CPU cores.
 - An unmetered connection may be needed for Chrome’s first on-device model download. Captures are not sent with that download.
@@ -125,7 +125,7 @@ No account, payment, credentials, special website, or external service is requir
 2. Select the extension’s toolbar icon. Confirm that the side panel opens and shows the capture disclosure before any screenshot exists.
 3. Choose **Capture visible tab privately**. Confirm that a preview of only the visible viewport appears.
 4. Optionally apply a crop, select an intent, and enter a short goal.
-5. Confirm that **Chrome on-device AI** is available, then choose **Guide on this device**. If Chrome reports that its model is downloading, leave the panel open until the progress completes.
+5. Confirm that **Chrome on-device AI** is available, then choose **Guide on this device**. While Chrome downloads or runs the model, confirm that **Cancel guide** remains available; cancelling restores the guide controls, and an unattended request times out after three minutes.
 6. Confirm that the result contains a subject, summary, recommended action, and—when applicable—evidence, steps, completion checks, warnings, or one clarification question.
 7. If a clarification question appears, enter an answer and choose **Update guide**. Confirm that the existing capture is reused without another screenshot.
 8. Choose **Start over** and confirm that the capture and guide are cleared.

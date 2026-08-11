@@ -2,6 +2,7 @@ import { GUIDE_INTENTS } from "./session-store.js";
 
 const MAX_IMAGE_DATA_URL_LENGTH = 4_100_000;
 const MAX_SOURCE_URL_LENGTH = 2_048;
+const DEFAULT_BROWSER_GUIDE_TIMEOUT_MS = 180_000;
 const GOAL_REQUIRED_INTENTS = new Set(["troubleshoot", "compare", "guide"]);
 
 export const GUIDE_RESULT_SCHEMA = Object.freeze({
@@ -135,13 +136,34 @@ const BROWSER_SYSTEM_INSTRUCTIONS = [
   "Use only visible evidence, state uncertainty, and never invent a brand, model, diagnosis, price, completed action, or source URL.",
   "Never ask for passwords, passcodes, verification codes, API keys, private keys, seed phrases, or money transfers.",
   "Never bypass safeguards, provide destructive commands, or give dangerous disassembly instructions.",
-  "Put hazards and stop conditions in warnings. Every high-stakes procedural step must name its risk.",
+  "Put specific hazards and stop conditions in warnings. Every high-stakes procedural step must name a concrete risk; placeholders such as none, low risk, be careful, or never skip this step are invalid.",
   "If one critical detail is missing, ask exactly one actionable clarificationQuestion, set confidence to 0.35 or lower, and return no steps or completionChecks. Otherwise omit clarificationQuestion.",
   "recommendedAction is display text only; no action is executed.",
 ].join("\n");
 
-const HIGH_STAKES_PATTERN = /\b(?:medical|medication|dose|diagnos(?:is|e|ed|ing)|injury|poison|electrical|voltage|wiring|mains|energized|gas|chemical|fire|weapon|explosive|structural|vehicle|brake|legal|financial|bank|investment|tax|account[- ]security|password|passcode|mfa|2fa|seed phrase|private key|api key|access token)\b/i;
-const STOP_CONDITION_PATTERN = /\b(?:stop|do not|don't|never|avoid|disconnect|call|contact|emergency|professional|qualified|licensed|manufacturer|support)\b/i;
+const MEDICATION_CONTEXT_PATTERNS = [
+  /\b(?:medicine|medication|medicament|drug|pharmacy|pharmacist|prescription|over[- ]the[- ]counter|otc|dose|dosage|overdose|allergic|allergy|side effect|drug interaction|swallow|ingest)\b/i,
+  /\b(?:acetaminophen|paracetamol|ibuprofen|naproxen|aspirin|diphenhydramine|benadryl|amoxicillin|metformin|insulin|warfarin|epinephrine|naloxone|opioid|antibiotic|antihistamine|anticoagulant)\b/i,
+  /\b(?:pill|caplet|lozenge|suppository|inhaler|injection|syringe|oral suspension)s?\b/i,
+  /\b(?:take|swallow|chew|dissolve|administer|inject|consume|give)\b.{0,50}\b(?:tablet|pill|capsule|caplet|lozenge|suppository|dose)s?\b/i,
+  /\b(?:tablet|pill|capsule|caplet|lozenge|suppository|dose)s?\b.{0,50}\b(?:take|swallow|chew|dissolve|administer|inject|consume|give)\b/i,
+  /\b(?:tablet|pill|capsule|caplet|lozenge|suppository|dose)s?\b.{0,50}\b\d+(?:\.\d+)?\s*(?:mcg|mg|milligrams?|ml|milliliters?|iu)\b/i,
+  /\b\d+(?:\.\d+)?\s*(?:mcg|mg|milligrams?|ml|milliliters?|iu)\b.{0,50}\b(?:tablet|pill|capsule|caplet|lozenge|suppository|dose)s?\b/i,
+];
+const HIGH_STAKES_PATTERNS = [
+  /\b(?:medical|diagnos(?:is|e|ed|ing)|symptom|injury|poison|electrical|voltage|wiring|mains|energized|gas|chemical|fire|weapon|explosive|structural|vehicle|brake|legal|financial|bank|investment|tax|account[- ]security|password|passcode|mfa|2fa|seed phrase|private key|api key|access token)\b/i,
+  ...MEDICATION_CONTEXT_PATTERNS,
+];
+const STOP_CONDITION_PATTERN = /\b(?:stop|do not|don['’]t|never|avoid|disconnect|call|contact|emergency|professional|qualified|licensed|manufacturer|support)\b/i;
+const PLACEHOLDER_SAFEGUARD_PATTERNS = [
+  /^(?:n\/?a|none|nothing|not applicable|risk[- ]free|safe|unknown|unspecified|(?:very )?low risk|minimal risk|negligible risk)[.!]?$/i,
+  /\b(?:(?:there|this|it)\s+(?:is|are)\s+)?no\s+(?:(?:known|special|significant|material|meaningful|expected)\s+)?(?:risk|hazard|danger)\b/i,
+  /\b(?:the\s+)?(?:risk|hazard|danger)\s+(?:is|appears|seems)\s+(?:none|unknown|unspecified|low|minimal|negligible)\b/i,
+  /\b(?:nothing|none)\s+(?:is\s+)?(?:known|expected|identified|applies)\b/i,
+  /\bnever skip (?:this|the) step\b/i,
+  /^(?:(?:important|warning|caution|stop)\s*[:!,-]?\s*(?:and\s+)?)?(?:be careful|use caution|stay safe|safety first|proceed carefully|follow (?:the )?instructions?)(?:\s+(?:before continuing|at all times))?[.!]?$/i,
+  /^(?:(?:important|warning|caution|stop)\s*[:!,-]?\s*(?:and\s+)?)?(?:there (?:is|are)|there['’]s)\s+(?:a|some|the)?\s*(?:general\s+)?risk(?:\s+(?:here|present))?(?:,?\s*(?:so|just)\s+(?:be careful|use caution))?[.!]?$/i,
+];
 const DEFINITIVE_HIGH_STAKES_PATTERNS = [
   /\b(?:you have|the diagnosis is|this (?:proves|confirms))\b.{0,80}\b(?:cancer|infection|fracture|disease|disorder|condition|overdose|poisoning)\b/i,
   /\b(?:this is (?:legal|illegal)|you are legally (?:required|entitled)|the contract is (?:valid|invalid|enforceable|void))\b/i,
@@ -157,9 +179,16 @@ const PROHIBITED_GUIDANCE_PATTERNS = [
   /\b(?:mix|combine)\b.{0,80}\b(?:bleach|ammonia|chlorine|acid|chemical)\b/i,
   /\b(?:build|make|assemble|modify)\b.{0,80}\b(?:bomb|explosive|weapon|firearm|silencer)\b/i,
   /\b(?:send|wire|transfer|pay)\b.{0,80}\b(?:money|funds|crypto(?:currency)?|bitcoin|gift card)\b/i,
+  /\b(?:take|swallow|chew|dissolve|administer|inject|consume|give|apply)\b.{0,50}\b(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|a|an)\s*(?:mcg|mg|milligrams?|ml|milliliters?|iu|units?|tablets?|pills?|capsules?|caplets?|lozenges?|suppositories?|doses?)\b/i,
+  /\b(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:mcg|mg|milligrams?|ml|milliliters?|iu|units?|tablets?|pills?|capsules?|caplets?|lozenges?|suppositories?|doses?)\b.{0,50}\b(?:should be |must be |to be )?(?:taken|swallowed|chewed|dissolved|administered|injected|consumed|given|applied)\b/i,
 ];
-const SAFE_NEGATED_ACTION_PATTERN = /\b(?:do not|don't|never|avoid)\s+(?:share|send|paste|upload|provide|reveal|enter|bypass|disable|defeat|override|remove|tamper|run|execute|touch|cut|splice|bridge|short|open|disassemble|mix|combine|build|make|assemble|modify|wire|transfer|pay)\b/gi;
-const SAFE_NEGATED_DESTRUCTIVE_COMMAND_PATTERN = /\b(?:do not|don't|never|avoid)\s+(?:run|execute)\s+(?:the\s+command\s+)?(?:rm\s+-rf|diskpart\s+clean|format\s+[a-z]:|curl\b.{0,100}\|\s*(?:sh|bash)|invoke-expression|downloadstring\s*\()/gi;
+const SAFE_NEGATED_ACTION_PATTERN = /\b(?:do not|don['’]t|never|avoid)\s+(?:share|send|paste|upload|provide|reveal|enter|bypass|disable|defeat|override|remove|tamper|run|execute|touch|cut|splice|bridge|short|open|disassemble|mix|combine|build|make|assemble|modify|wire|transfer|pay)\b/gi;
+const SAFE_NEGATED_DESTRUCTIVE_COMMAND_PATTERN = /\b(?:do not|don['’]t|never|avoid)\s+(?:run|execute)\s+(?:the\s+command\s+)?(?:rm\s+-rf|diskpart\s+clean|format\s+[a-z]:|curl\b.{0,100}\|\s*(?:sh|bash)|invoke-expression|downloadstring\s*\()/gi;
+const SAFE_NEGATED_DOSAGE_PATTERN = /\b(?:do not|don['’]t|never|avoid)\s+(?:take|swallow|chew|dissolve|administer|inject|consume|give|apply)\b[^.!?;—\n]{0,50}\b(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|a|an)\s*(?:mcg|mg|milligrams?|ml|milliliters?|iu|units?|tablets?|pills?|capsules?|caplets?|lozenges?|suppositories?|doses?)\b/gi;
+const SAFE_NEGATED_MEDICATION_ACTION_PATTERN = /\b(?:do not|don['’]t|never|avoid)\s+(?:take|swallow|chew|dissolve|administer|inject|consume|give|apply|use|start|stop|skip|increase|decrease|double|halve|adjust|change|taper|resume)\b.{0,160}?(?=\s*(?:[.!?;,—]|\b(?:and|but|however|then|instead|yet)\b|$))/gi;
+const DIRECT_MEDICATION_ACTION_PATTERN = /\b(?:tak(?:e|ing)|swallow(?:ing)?|chew(?:ing)?|dissolv(?:e|ing)|administer(?:ing)?|inject(?:ing)?|consum(?:e|ing)|giv(?:e|ing)|apply(?:ing)?|us(?:e|ing)|start(?:ing)?|stop(?:ping)?|skip(?:ping)?|increase|decrease|double|halve|adjust|change|taper|resume)\b/i;
+const MEDICATION_QUANTITY_OR_SCHEDULE_PATTERN = /\b(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|once|twice|daily|weekly|hourly|today|tonight|now|every\s+\d+(?:\.\d+)?\s*(?:hours?|hrs?|minutes?|mins?)|per\s+day|at\s+bedtime|with\s+meals?)\b/i;
+const MEDICATION_REFERENCE_PATTERN = /\b(?:medicine|medication|drug|prescription|dose|acetaminophen|paracetamol|ibuprofen|naproxen|aspirin|diphenhydramine|benadryl|amoxicillin|metformin|insulin|warfarin|epinephrine|naloxone|opioid|antibiotic|antihistamine|anticoagulant|pill|capsule|caplet|lozenge|suppository|inhaler|injection)s?\b/i;
 
 export class GuideAdapterError extends Error {
   constructor(message, code = "GUIDE_ADAPTER_ERROR") {
@@ -171,6 +200,12 @@ export class GuideAdapterError extends Error {
 
 function text(value, maxLength, fallback = "") {
   return typeof value === "string" ? value.trim().slice(0, maxLength) || fallback : fallback;
+}
+
+function isMeaningfulSafeguard(value) {
+  const cleaned = compactText(value, 700);
+  return cleaned.length >= 16
+    && !PLACEHOLDER_SAFEGUARD_PATTERNS.some((pattern) => pattern.test(cleaned));
 }
 
 function compactText(value, maxLength) {
@@ -350,6 +385,7 @@ function assertGuideSafety(result, request) {
   ].join(" ").replace(/\s+/g, " ");
   const scannableText = renderedText
     .replace(SAFE_NEGATED_DESTRUCTIVE_COMMAND_PATTERN, "")
+    .replace(SAFE_NEGATED_DOSAGE_PATTERN, "")
     .replace(SAFE_NEGATED_ACTION_PATTERN, "");
   const prohibited = PROHIBITED_GUIDANCE_PATTERNS.some((pattern) => pattern.test(scannableText));
   if (prohibited) {
@@ -366,12 +402,27 @@ function assertGuideSafety(result, request) {
     result.summary,
     renderedText,
   ].filter(Boolean).join(" ");
-  if (!HIGH_STAKES_PATTERN.test(allText)) return result;
+  const medicationContext = MEDICATION_CONTEXT_PATTERNS.some((pattern) => pattern.test(allText));
+  const medicationActionFields = [
+    result.recommendedAction.title,
+    result.recommendedAction.reason,
+    ...result.steps.flatMap((step) => [step.title, step.instruction]),
+  ];
+  if (medicationContext && medicationActionFields.some((field) => {
+    const scannable = field.replace(SAFE_NEGATED_MEDICATION_ACTION_PATTERN, "").trim();
+    return DIRECT_MEDICATION_ACTION_PATTERN.test(scannable)
+      && (MEDICATION_QUANTITY_OR_SCHEDULE_PATTERN.test(scannable) || MEDICATION_REFERENCE_PATTERN.test(scannable));
+  })) {
+    throw new GuideAdapterError("The on-device result recommended a medication action, so it was not shown.", "UNSAFE_GUIDE");
+  }
+  if (!HIGH_STAKES_PATTERNS.some((pattern) => pattern.test(allText))) return result;
   if (DEFINITIVE_HIGH_STAKES_PATTERNS.some((pattern) => pattern.test(renderedText))) {
     throw new GuideAdapterError("The on-device result made a definitive high-stakes claim, so it was not shown.", "UNSAFE_GUIDE");
   }
-  const hasStopCondition = result.warnings.some((warning) => STOP_CONDITION_PATTERN.test(warning));
-  const everyStepNamesRisk = result.steps.every((step) => Boolean(step.risk));
+  const hasStopCondition = result.warnings.some(
+    (warning) => STOP_CONDITION_PATTERN.test(warning) && isMeaningfulSafeguard(warning),
+  );
+  const everyStepNamesRisk = result.steps.every((step) => isMeaningfulSafeguard(step.risk));
   if (!hasStopCondition || !everyStepNamesRisk) {
     throw new GuideAdapterError("The on-device result omitted required high-stakes safeguards. No procedural guide was shown.", "UNSAFE_GUIDE");
   }
@@ -409,9 +460,51 @@ function browserPrompt(request) {
   })}`;
 }
 
-async function dataUrlBlob(dataUrl) {
-  const response = await fetch(dataUrl);
+async function dataUrlBlob(dataUrl, signal) {
+  const response = await fetch(dataUrl, { signal });
   return response.blob();
+}
+
+function abortReason(message) {
+  if (typeof DOMException === "function") return new DOMException(message, "AbortError");
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
+function awaitWithAbort(promise, signal, onLateResolve) {
+  if (signal.aborted) {
+    void Promise.resolve(promise).then(onLateResolve, () => undefined);
+    return Promise.reject(signal.reason || abortReason("The operation was cancelled."));
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const handleAbort = () => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", handleAbort);
+      reject(signal.reason || abortReason("The operation was cancelled."));
+    };
+    signal.addEventListener("abort", handleAbort, { once: true });
+    Promise.resolve(promise).then(
+      (value) => {
+        if (settled) {
+          onLateResolve?.(value);
+          return;
+        }
+        settled = true;
+        signal.removeEventListener("abort", handleAbort);
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", handleAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 export async function runBrowserGuide(requestInput, options = {}) {
@@ -422,13 +515,29 @@ export async function runBrowserGuide(requestInput, options = {}) {
   }
 
   const modelOptions = languageModelOptions(Boolean(request.image));
+  const timeoutMs = Number.isFinite(options.timeoutMs)
+    ? Math.max(1, Math.min(600_000, Math.round(options.timeoutMs)))
+    : DEFAULT_BROWSER_GUIDE_TIMEOUT_MS;
+  const operationController = new AbortController();
+  let timedOut = false;
+  const forwardAbort = () => operationController.abort(
+    options.signal?.reason || abortReason("Guide creation was cancelled."),
+  );
+  if (options.signal?.aborted) forwardAbort();
+  else options.signal?.addEventListener("abort", forwardAbort, { once: true });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    operationController.abort(abortReason("Guide creation timed out."));
+  }, timeoutMs);
+  const signal = operationController.signal;
   let session;
   try {
     // create() must be invoked directly from the Make guide user gesture. The
     // panel performs the asynchronous availability check before enabling this
     // mode; repeating it here could consume Chrome's transient activation.
-    session = await languageModel.create({
+    const sessionPromise = languageModel.create({
       ...modelOptions,
+      signal,
       initialPrompts: [{ role: "system", content: BROWSER_SYSTEM_INSTRUCTIONS }],
       monitor(monitor) {
         monitor.addEventListener("downloadprogress", (event) => {
@@ -436,11 +545,15 @@ export async function runBrowserGuide(requestInput, options = {}) {
         });
       },
     });
+    session = await awaitWithAbort(sessionPromise, signal, (lateSession) => lateSession?.destroy?.());
     const prompt = browserPrompt(request);
     const input = request.image
-      ? [{ role: "user", content: [{ type: "text", value: prompt }, { type: "image", value: await dataUrlBlob(request.image) }] }]
+      ? [{ role: "user", content: [{ type: "text", value: prompt }, { type: "image", value: await dataUrlBlob(request.image, signal) }] }]
       : prompt;
-    const raw = await session.prompt(input, { responseConstraint: BROWSER_GUIDE_RESPONSE_CONSTRAINT });
+    const raw = await awaitWithAbort(session.prompt(input, {
+      responseConstraint: BROWSER_GUIDE_RESPONSE_CONSTRAINT,
+      signal,
+    }), signal);
     const parsed = JSON.parse(raw);
     const clarification = text(parsed.clarificationQuestion, 500);
     const result = assertGuideSafety(normalizeGuideResult({
@@ -459,6 +572,14 @@ export async function runBrowserGuide(requestInput, options = {}) {
     return { ok: true, result, provider: "local", model: "chrome-language-model", requestId: requestId("browser"), warnings: [] };
   } catch (error) {
     if (error instanceof GuideAdapterError) throw error;
+    if (signal.aborted) {
+      throw new GuideAdapterError(
+        timedOut
+          ? "Chrome’s on-device model took too long. Try again or crop a smaller area."
+          : "Guide creation was cancelled. You can try again when ready.",
+        timedOut ? "MODEL_TIMEOUT" : "MODEL_CANCELLED",
+      );
+    }
     throw new GuideAdapterError(
       error instanceof SyntaxError
         ? "Chrome’s on-device model returned a result that could not be read. Try again."
@@ -466,6 +587,8 @@ export async function runBrowserGuide(requestInput, options = {}) {
       "MODEL_FAILED",
     );
   } finally {
+    clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", forwardAbort);
     session?.destroy?.();
   }
 }

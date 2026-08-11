@@ -19,6 +19,10 @@ export const maxDuration = 30;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_REQUESTS = 12;
 const MAX_RATE_BUCKETS = 2_000;
+const ROUTE_DEADLINE_MS = 27_000;
+const AUTO_REMOTE_PROVIDER_BUDGET_MS = 10_000;
+const EXPLICIT_REMOTE_PROVIDER_BUDGET_MS = 20_000;
+const LOCAL_FALLBACK_RESERVE_MS = 1_000;
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 
 class RequestTooLargeError extends Error {}
@@ -27,6 +31,7 @@ type UnsafeGuideReason =
   | "prohibited-output"
   | "actionable-clarification"
   | "definitive-high-stakes-claim"
+  | "unsafe-medication-action"
   | "missing-high-stakes-controls";
 
 class UnsafeGuideOutputError extends Error {
@@ -50,13 +55,63 @@ const PROVIDER_INSTRUCTIONS = [
   "recommendedAction is {title, reason}. steps is an ordered array of {id, title, instruction, completionCheck?, risk?}; use short unique alphanumeric ids.",
   "alternatives is an array of {title, tradeoff}. sources is always [] because the server supplies source metadata.",
   "clarificationQuestion is optional. Include it when the subject, goal, comparison target, or failure symptom is unclear; in that case keep confidence low and do not invent procedural steps.",
-  "For medical, electrical, chemical, fire, weapons, structural, vehicle, legal, financial, account-security, or other high-stakes topics: state uncertainty, give explicit stop conditions, include a risk for every step, prefer non-destructive checks, and recommend a qualified professional when appropriate.",
+  "When clarificationQuestion is present, recommendedAction must only ask the user to answer that question; do not recommend an action before the missing detail is supplied.",
+  "For medical, electrical, chemical, fire, weapons, structural, vehicle, legal, financial, account-security, or other high-stakes topics: state uncertainty, give explicit stop conditions that name the circumstance to stop, include a concrete risk for every step, prefer non-destructive checks, and recommend a qualified professional when appropriate. Never use placeholders such as none, low risk, be careful, or never skip this step as a safeguard.",
+  "Do not prescribe, calculate, or recommend medication doses, schedules, changes, starts, stops, or substitutions. Direct the user to the product label and a pharmacist or qualified clinician instead.",
   "Never diagnose, promise safety, bypass a guard or interlock, suggest dangerous disassembly, provide destructive commands, or claim that a source was consulted when it was not provided.",
   "confidence is a number from 0 to 1. warnings, completionChecks, and all other arrays must be present even when empty. Do not include a processing key.",
 ].join("\n");
 
-const HIGH_STAKES_PATTERN = /\b(?:medical|medicine|medication|dose|dosage|diagnos(?:is|e|ed|ing|tic)|injury|bleeding|poison|overdose|electrical|electricity|voltage|wiring|mains|energized|gas|chemical|fire|flame|weapon|firearm|explosive|structural|load-bearing|vehicle|brake|airbag|legal|lawsuit|contract|financial|bank|investment|tax|loan|mortgage|account[- ]security|password|passcode|mfa|2fa|seed phrase|private key|api key|access token)\b/i;
-const STOP_CONDITION_PATTERN = /\b(?:stop|do not|don't|never|avoid|disconnect|call|contact|emergency|professional|qualified|licensed|manufacturer|support)\b/i;
+const NON_MEDICATION_HIGH_STAKES_PATTERN = /\b(?:medical|diagnos(?:is|e|ed|ing|tic)|injury|bleeding|poison|overdose|electrical|electricity|voltage|wiring|mains|energized|gas|chemical|fire|flame|weapon|firearm|explosive|structural|load-bearing|vehicle|brake|airbag|legal|lawsuit|contract|financial|bank|investment|tax|loan|mortgage|account[- ]security|password|passcode|mfa|2fa|seed phrase|private key|api key|access token)\b/i;
+const MEDICATION_TERM_SOURCE = String.raw`(?:medicines?|medications?|prescriptions?|pharmaceuticals?|over[- ]the[- ]counter|otc|doses?|dosage|acetaminophen|paracetamol|ibuprofen|aspirin|naproxen|amoxicillin|insulin|metformin|warfarin|opioids?|naloxone|epinephrine|antibiotics?|antihistamines?|decongestants?|pain[- ]?killers?|pain relievers?|supplements?|vitamins?)`;
+const MEDICATION_FORM_SOURCE = String.raw`(?:pills?|capsules?|caplets?|lozenges?|inhalers?|injections?|syrups?|oral solutions?|tablets?|gummies?|drops?|puffs?)`;
+const UNAMBIGUOUS_MEDICATION_FORM_SOURCE = String.raw`(?:pills?|capsules?|caplets?|lozenges?|inhalers?|injections?|syrups?|oral solutions?)`;
+const MEDICATION_ADMINISTRATION_ACTION_SOURCE = String.raw`(?:take|give|administer|inject|swallow|ingest|consume|apply)`;
+const MEDICATION_CHANGE_ACTION_SOURCE = String.raw`(?:start|stop|skip|increase|decrease|double|halve|adjust|change|taper|resume|exceed)`;
+const MEDICATION_ACTION_SOURCE = String.raw`(?:${MEDICATION_ADMINISTRATION_ACTION_SOURCE}|${MEDICATION_CHANGE_ACTION_SOURCE})`;
+const DOSAGE_AMOUNT_SOURCE = String.raw`(?:\d+(?:\.\d+)?\s*(?:mg|mcg|milligrams?|micrograms?|ml|milliliters?|pills?|capsules?|caplets?|tablets?|drops?|puffs?))`;
+const DOSAGE_SCHEDULE_SOURCE = String.raw`(?:every\s+\d+(?:\.\d+)?\s*(?:hours?|hrs?|minutes?|mins?)|once|twice|three times|daily|weekly|hourly|per day|at bedtime|with meals?)`;
+const ADMINISTERED_UNIT_DOSE_PATTERN = /\b(?:inject|administer)\b.{0,60}\b\d+(?:\.\d+)?\s+units?\b|\b\d+(?:\.\d+)?\s+units?\b.{0,60}\b(?:inject|administer)\b/i;
+const MEDICATION_HIGH_STAKES_PATTERNS = [
+  new RegExp(String.raw`\b${MEDICATION_TERM_SOURCE}\b`, "i"),
+  new RegExp(String.raw`\b${UNAMBIGUOUS_MEDICATION_FORM_SOURCE}\b`, "i"),
+  new RegExp(String.raw`\b${MEDICATION_ADMINISTRATION_ACTION_SOURCE}\b.{0,80}\b${MEDICATION_FORM_SOURCE}\b`, "i"),
+  new RegExp(String.raw`\b${MEDICATION_FORM_SOURCE}\b.{0,80}\b${MEDICATION_ADMINISTRATION_ACTION_SOURCE}\b`, "i"),
+  new RegExp(String.raw`\b${MEDICATION_CHANGE_ACTION_SOURCE}\b.{0,80}\b(?:${MEDICATION_TERM_SOURCE}|${UNAMBIGUOUS_MEDICATION_FORM_SOURCE}|${DOSAGE_AMOUNT_SOURCE})\b`, "i"),
+  new RegExp(String.raw`\b(?:${MEDICATION_TERM_SOURCE}|${UNAMBIGUOUS_MEDICATION_FORM_SOURCE}|${DOSAGE_AMOUNT_SOURCE})\b.{0,80}\b${MEDICATION_CHANGE_ACTION_SOURCE}\b`, "i"),
+  new RegExp(String.raw`\b${DOSAGE_AMOUNT_SOURCE}\b.{0,80}\b${DOSAGE_SCHEDULE_SOURCE}\b`, "i"),
+  new RegExp(String.raw`\b${DOSAGE_SCHEDULE_SOURCE}\b.{0,80}\b${DOSAGE_AMOUNT_SOURCE}\b`, "i"),
+  ADMINISTERED_UNIT_DOSE_PATTERN,
+];
+const MEANINGFUL_STOP_CONDITION_PATTERNS = [
+  /\b(?:stop|pause|do not continue|don['’]t continue|avoid continuing|disconnect)\b.{0,160}\b(?:if|when|unless|until|danger|hazard|risk|unsafe|uncertain|unsure|pain|bleed|smoke|spark|heat|odor|energized|live|exposed|damage|leak|overheat|reaction|worsen)\b/i,
+  /\b(?:if|when|unless)\b.{0,160}\b(?:stop|pause|do not continue|don['’]t continue|disconnect|call|contact|seek)\b/i,
+  /\b(?:do not|don['’]t|never|avoid)\b.{0,100}\b(?:open|touch|cut|splice|bridge|short|disassemble|mix|combine|share|send|reveal|enter|bypass|disable|take|give|administer|inject|swallow|ingest|exceed|continue|proceed)\b/i,
+  /\b(?:call|contact|consult|seek|get)\b.{0,120}\b(?:emergency services?|poison control|professional|doctor|physician|pharmacist|clinician|lawyer|attorney|financial advisor|electrician|technician|qualified|licensed|manufacturer|official support)\b/i,
+];
+const PLACEHOLDER_RISK_PATTERN = /(?:^(?:none|n\/?a|not applicable|no (?:known )?risk|minimal(?: risk)?|low(?: risk)?|safe|unknown|be careful|use caution|follow (?:the )?instructions?|never skip this step)[.!]?$|\b(?:there is\s+)?no\s+(?:known\s+|special\s+|meaningful\s+|significant\s+)?risk(?:\s+(?:here|is expected))?\b|\brisk\s+is\s+(?:none|minimal|low|not expected)\b)/i;
+const MEANINGFUL_RISK_PATTERN = /\b(?:risk|harm|injur|shock|burn|fire|poison|overdose|allerg|bleed|infection|damage|loss|legal|financial|privacy|security|lockout|worsen|incorrect|inaccurate|wrong|exposure|danger|unsafe|stop|avoid|do not|don['’]t|professional|live|energized|toxic|interaction|side effect|reaction|pain)\w*\b/i;
+const SAFE_NEGATED_MEDICATION_CLAUSE_PATTERN = new RegExp(
+  String.raw`\b(?:do not|don['’]t|never|avoid)\s+${MEDICATION_ACTION_SOURCE}\b.{0,160}?(?=\s*(?:[.!?;,—]|\b(?:and|but|however|then|instead|yet)\b|$))`,
+  "gi",
+);
+const QUALIFIED_MEDICATION_REFERRAL_ONLY_PATTERN = /^(?:(?:ask|call|check with|consult|contact|seek advice from)\b.{0,100}?\b(?:doctor|physician|pharmacist|clinician|qualified medical professional|poison control)\b|follow (?:the )?directions? (?:from|of) (?:a |the )?(?:doctor|physician|pharmacist|clinician|qualified medical professional))(?:\s+(?:before|about|whether|for guidance on)\b[^.;!?]*)?[.!]?$/i;
+const DIRECT_MEDICATION_ACTION_PATTERN = /\b(?:take|give|administer|inject|swallow|ingest|consume|apply|start|stop|skip|increase|decrease|double|halve|adjust|change|taper|resume|exceed)\b/i;
+const MEDICATION_QUANTITY_OR_SCHEDULE_PATTERN = /\b(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|once|twice|daily|weekly|hourly|today|tonight|now|every\s+\d+(?:\.\d+)?\s*(?:hours?|hrs?|minutes?|mins?)|per\s+day|at\s+bedtime|with\s+meals?)\b/i;
+const MEDICATION_REFERENCE_PATTERN = new RegExp(String.raw`\b(?:${MEDICATION_TERM_SOURCE}|${MEDICATION_FORM_SOURCE})\b`, "i");
+const UNSAFE_MEDICATION_ACTION_PATTERNS = [
+  new RegExp(String.raw`\b${MEDICATION_ADMINISTRATION_ACTION_SOURCE}\b.{0,80}\b(?:${MEDICATION_TERM_SOURCE}|${MEDICATION_FORM_SOURCE}|${DOSAGE_AMOUNT_SOURCE})\b`, "i"),
+  new RegExp(String.raw`\b(?:${MEDICATION_TERM_SOURCE}|${MEDICATION_FORM_SOURCE}|${DOSAGE_AMOUNT_SOURCE})\b.{0,80}\b${MEDICATION_ADMINISTRATION_ACTION_SOURCE}\b`, "i"),
+  new RegExp(String.raw`\b${MEDICATION_CHANGE_ACTION_SOURCE}\b.{0,80}\b(?:${MEDICATION_TERM_SOURCE}|${UNAMBIGUOUS_MEDICATION_FORM_SOURCE}|${DOSAGE_AMOUNT_SOURCE})\b`, "i"),
+  new RegExp(String.raw`\b(?:${MEDICATION_TERM_SOURCE}|${UNAMBIGUOUS_MEDICATION_FORM_SOURCE}|${DOSAGE_AMOUNT_SOURCE})\b.{0,80}\b${MEDICATION_CHANGE_ACTION_SOURCE}\b`, "i"),
+  new RegExp(String.raw`\b${DOSAGE_AMOUNT_SOURCE}\b.{0,80}\b${DOSAGE_SCHEDULE_SOURCE}\b`, "i"),
+  new RegExp(String.raw`\b${DOSAGE_SCHEDULE_SOURCE}\b.{0,80}\b${DOSAGE_AMOUNT_SOURCE}\b`, "i"),
+  ADMINISTERED_UNIT_DOSE_PATTERN,
+];
+const NEUTRAL_CLARIFICATION_ACTION = {
+  title: "Answer the clarification question",
+  reason: "One specific detail is needed before reliable next steps can be recommended.",
+} as const;
 const DEFINITIVE_HIGH_STAKES_PATTERNS = [
   /\b(?:you have|the diagnosis is|this (?:proves|confirms))\b.{0,80}\b(?:cancer|infection|fracture|disease|disorder|condition|overdose|poisoning)\b/i,
   /\b(?:this is (?:legal|illegal)|you are legally (?:required|entitled)|the contract is (?:valid|invalid|enforceable|void))\b/i,
@@ -74,14 +129,14 @@ const PROHIBITED_GUIDANCE_PATTERNS = [
   /\b(?:build|make|assemble|modify)\b.{0,80}\b(?:bomb|explosive|weapon|firearm|silencer)\b/i,
   /\b(?:send|wire|transfer|pay)\b.{0,80}\b(?:money|funds|crypto(?:currency)?|bitcoin|gift card)\b/i,
 ];
-const SAFE_NEGATED_ACTION_PATTERN = /\b(?:do not|don't|never|avoid)\s+(?:share|send|paste|upload|provide|reveal|enter|bypass|disable|defeat|override|remove|tamper|run|execute|touch|cut|splice|bridge|short|open|disassemble|mix|combine|build|make|assemble|modify|wire|transfer|pay)\b/gi;
-const SAFE_NEGATED_DESTRUCTIVE_COMMAND_PATTERN = /\b(?:do not|don't|never|avoid)\s+(?:run|execute)\s+(?:the\s+command\s+)?(?:rm\s+-rf|diskpart\s+clean|format\s+[a-z]:|curl\b.{0,100}\|\s*(?:sh|bash)|invoke-expression|downloadstring\s*\()/gi;
+const SAFE_NEGATED_ACTION_PATTERN = /\b(?:do not|don['’]t|never|avoid)\s+(?:share|send|paste|upload|provide|reveal|enter|bypass|disable|defeat|override|remove|tamper|run|execute|touch|cut|splice|bridge|short|open|disassemble|mix|combine|build|make|assemble|modify|wire|transfer|pay)\b/gi;
+const SAFE_NEGATED_DESTRUCTIVE_COMMAND_PATTERN = /\b(?:do not|don['’]t|never|avoid)\s+(?:run|execute)\s+(?:the\s+command\s+)?(?:rm\s+-rf|diskpart\s+clean|format\s+[a-z]:|curl\b.{0,100}\|\s*(?:sh|bash)|invoke-expression|downloadstring\s*\()/gi;
 
 let openaiClient: OpenAI | null = null;
 
 function getOpenAIClient() {
   if (!openaiClient) {
-    openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 20_000, maxRetries: 1 });
+    openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout: 20_000, maxRetries: 0 });
   }
   return openaiClient;
 }
@@ -209,6 +264,53 @@ function hasProhibitedGuidance(content: GuideContent) {
   return PROHIBITED_GUIDANCE_PATTERNS.some((pattern) => pattern.test(scannableText));
 }
 
+function isHighStakesText(text: string) {
+  return NON_MEDICATION_HIGH_STAKES_PATTERN.test(text)
+    || MEDICATION_HIGH_STAKES_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function hasUnsafeMedicationAction(content: GuideContent, request: GuideRequest) {
+  const medicationContext = [
+    request.goal,
+    request.title,
+    request.selection,
+    request.pageContext,
+    guideText(content),
+  ].filter(Boolean).join(" ");
+  if (!MEDICATION_HIGH_STAKES_PATTERNS.some((pattern) => pattern.test(medicationContext))) return false;
+
+  const actionableFields = [
+    content.recommendedAction.title,
+    content.recommendedAction.reason,
+    ...content.steps.flatMap((step) => [step.title, step.instruction]),
+  ];
+
+  return actionableFields.some((field) => {
+    const scannable = field.replace(SAFE_NEGATED_MEDICATION_CLAUSE_PATTERN, "").trim();
+    if (!scannable) return false;
+    const hasDoseAmount = new RegExp(String.raw`\b${DOSAGE_AMOUNT_SOURCE}\b`, "i").test(scannable);
+    if (!hasDoseAmount && QUALIFIED_MEDICATION_REFERRAL_ONLY_PATTERN.test(scannable)) return false;
+    return UNSAFE_MEDICATION_ACTION_PATTERNS.some((pattern) => pattern.test(scannable))
+      || (DIRECT_MEDICATION_ACTION_PATTERN.test(scannable)
+        && (MEDICATION_QUANTITY_OR_SCHEDULE_PATTERN.test(scannable)
+          || MEDICATION_REFERENCE_PATTERN.test(scannable)));
+  });
+}
+
+function hasMeaningfulStopCondition(warning: string) {
+  const normalized = warning.replace(/\s+/g, " ").trim();
+  return normalized.length >= 12
+    && !PLACEHOLDER_RISK_PATTERN.test(normalized)
+    && MEANINGFUL_STOP_CONDITION_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function hasMeaningfulRisk(risk: string | undefined) {
+  const normalized = risk?.replace(/\s+/g, " ").trim() || "";
+  return normalized.length >= 12
+    && !PLACEHOLDER_RISK_PATTERN.test(normalized)
+    && MEANINGFUL_RISK_PATTERN.test(normalized);
+}
+
 function assertGuideSafety(content: GuideContent, request: GuideRequest) {
   if (hasProhibitedGuidance(content)) {
     throw new UnsafeGuideOutputError("prohibited-output");
@@ -218,18 +320,22 @@ function assertGuideSafety(content: GuideContent, request: GuideRequest) {
     throw new UnsafeGuideOutputError("actionable-clarification");
   }
 
+  if (hasUnsafeMedicationAction(content, request)) {
+    throw new UnsafeGuideOutputError("unsafe-medication-action");
+  }
+
   const requestContext = [request.intent, request.goal, request.title, request.url, request.selection, request.pageContext]
     .filter((value): value is string => Boolean(value))
     .join(" ");
-  const highStakes = HIGH_STAKES_PATTERN.test(`${requestContext} ${guideText(content)}`);
+  const highStakes = isHighStakesText(`${requestContext} ${guideText(content)}`);
   if (!highStakes) return;
 
   if (DEFINITIVE_HIGH_STAKES_PATTERNS.some((pattern) => pattern.test(guideText(content)))) {
     throw new UnsafeGuideOutputError("definitive-high-stakes-claim");
   }
 
-  const hasStopCondition = content.warnings.some((warning) => STOP_CONDITION_PATTERN.test(warning));
-  const everyStepNamesRisk = content.steps.every((step) => Boolean(step.risk?.trim()));
+  const hasStopCondition = content.warnings.some(hasMeaningfulStopCondition);
+  const everyStepNamesRisk = content.steps.every((step) => hasMeaningfulRisk(step.risk));
   if (!hasStopCondition || !everyStepNamesRisk) {
     throw new UnsafeGuideOutputError("missing-high-stakes-controls");
   }
@@ -248,9 +354,12 @@ function finalizeGuide(
   provider: GuideExecutionProvider,
   model?: string,
 ) {
-  assertGuideSafety(content, request);
+  const safeContent = content.clarificationQuestion
+    ? { ...content, recommendedAction: NEUTRAL_CLARIFICATION_ACTION }
+    : content;
+  assertGuideSafety(safeContent, request);
   return guideResultSchema.parse({
-    ...content,
+    ...safeContent,
     intent: request.intent,
     goal: request.goal || content.goal,
     sources: trustedSources(request),
@@ -258,7 +367,7 @@ function finalizeGuide(
   });
 }
 
-async function guideWithGemini(request: GuideRequest) {
+async function guideWithGemini(request: GuideRequest, signal: AbortSignal) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not configured.");
 
@@ -281,7 +390,7 @@ async function guideWithGemini(request: GuideRequest) {
         contents: [{ role: "user", parts }],
         generationConfig: { responseMimeType: "application/json", temperature: 0.1, maxOutputTokens: 2_500 },
       }),
-      signal: AbortSignal.timeout(20_000),
+      signal,
     },
   );
 
@@ -305,26 +414,29 @@ async function guideWithGemini(request: GuideRequest) {
   return { model, result: finalizeGuide(content, request, "gemini", model) };
 }
 
-async function guideWithOpenAI(request: GuideRequest) {
+async function guideWithOpenAI(request: GuideRequest, signal: AbortSignal) {
   const model = process.env.GUIDE_OPENAI_MODEL || process.env.OPENAI_MODEL || "gpt-5.6-luna";
   const userContext = buildUserContext(request);
-  const response = await getOpenAIClient().responses.create({
-    model,
-    instructions: PROVIDER_INSTRUCTIONS,
-    input: [
-      {
-        role: "user",
-        content: request.image
-          ? [
-              { type: "input_text", text: userContext },
-              { type: "input_image", image_url: request.image, detail: "high" },
-            ]
-          : [{ type: "input_text", text: userContext }],
-      },
-    ],
-    max_output_tokens: 2_500,
-    store: false,
-  });
+  const response = await getOpenAIClient().responses.create(
+    {
+      model,
+      instructions: PROVIDER_INSTRUCTIONS,
+      input: [
+        {
+          role: "user",
+          content: request.image
+            ? [
+                { type: "input_text", text: userContext },
+                { type: "input_image", image_url: request.image, detail: "high" },
+              ]
+            : [{ type: "input_text", text: userContext }],
+        },
+      ],
+      max_output_tokens: 2_500,
+      store: false,
+    },
+    { signal },
+  );
   const content = guideContentSchema.parse(jsonFromText(response.output_text || "{}"));
   return { model, result: finalizeGuide(content, request, "openai", model) };
 }
@@ -341,7 +453,7 @@ function localGuide(request: GuideRequest) {
   const goal = compactText(request.goal, 500) || `Get a reliable ${request.intent} result`;
   const inputDescription = request.image ? "image" : request.selection ? "selection" : "page context";
   const requestText = [request.goal, request.title, request.selection, request.pageContext].filter(Boolean).join(" ");
-  const highStakesWarning = HIGH_STAKES_PATTERN.test(requestText)
+  const highStakesWarning = isHighStakesText(requestText)
     ? "Do not take high-stakes action from this fallback. Stop and contact a qualified professional or official support channel."
     : undefined;
   const content: GuideContent = {
@@ -404,9 +516,9 @@ function serverProviderDiagnostic(error: unknown) {
   return "provider-error";
 }
 
-async function runProvider(provider: GuideExecutionProvider, request: GuideRequest) {
-  if (provider === "gemini") return guideWithGemini(request);
-  if (provider === "openai") return guideWithOpenAI(request);
+async function runProvider(provider: GuideExecutionProvider, request: GuideRequest, signal?: AbortSignal) {
+  if (provider === "gemini") return guideWithGemini(request, signal || AbortSignal.abort());
+  if (provider === "openai") return guideWithOpenAI(request, signal || AbortSignal.abort());
   return localGuide(request);
 }
 
@@ -489,9 +601,33 @@ export async function POST(request: Request) {
   }
 
   const warnings: string[] = [];
-  for (const provider of providers) {
+  const routeDeadlineAt = startedAt + ROUTE_DEADLINE_MS;
+  const routeDeadlineSignal = AbortSignal.timeout(Math.max(1, routeDeadlineAt - Date.now()));
+  for (const [providerIndex, provider] of providers.entries()) {
+    if (request.signal.aborted) {
+      return Response.json(
+        { ok: false, error: "Guide request was cancelled.", requestId },
+        { status: 499, headers: baseHeaders },
+      );
+    }
     try {
-      const generated = await runProvider(provider, parsed.data);
+      let providerSignal: AbortSignal | undefined;
+      if (provider !== "local") {
+        const hasLocalFallback = providers.slice(providerIndex + 1).includes("local");
+        const remainingMs = routeDeadlineAt - Date.now() - (hasLocalFallback ? LOCAL_FALLBACK_RESERVE_MS : 0);
+        if (remainingMs <= 0 || routeDeadlineSignal.aborted) {
+          throw new DOMException("Cloud guidance timed out at the route deadline.", "TimeoutError");
+        }
+        const providerBudget = requestedProvider === "auto"
+          ? AUTO_REMOTE_PROVIDER_BUDGET_MS
+          : EXPLICIT_REMOTE_PROVIDER_BUDGET_MS;
+        providerSignal = AbortSignal.any([
+          request.signal,
+          routeDeadlineSignal,
+          AbortSignal.timeout(Math.max(1, Math.min(providerBudget, remainingMs))),
+        ]);
+      }
+      const generated = await runProvider(provider, parsed.data, providerSignal);
       console.info(
         JSON.stringify({
           event: "guide.generate.success",
@@ -513,6 +649,12 @@ export async function POST(request: Request) {
         { headers: responseHeaders(requestId, rateLimit.remaining, provider) },
       );
     } catch (error) {
+      if (request.signal.aborted) {
+        return Response.json(
+          { ok: false, error: "Guide request was cancelled.", requestId },
+          { status: 499, headers: baseHeaders },
+        );
+      }
       const publicError = publicProviderError(provider, error);
       warnings.push(publicError);
       console.warn(

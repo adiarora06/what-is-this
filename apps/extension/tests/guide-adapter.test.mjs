@@ -123,11 +123,13 @@ test("browser AI creates the model directly from the user-triggered path", async
     },
   };
 
-  const response = await runBrowserGuide(
+  const guide = runBrowserGuide(
     { intent: "identify", image, goal: "Identify the controls" },
     { languageModel },
   );
 
+  assert.equal(created, true, "LanguageModel.create() must run before the user-triggered call yields");
+  const response = await guide;
   assert.equal(created, true);
   assert.equal(destroyed, true);
   assert.equal(createOptions.initialPrompts[0].role, "system");
@@ -452,4 +454,282 @@ test("browser AI requires a stop warning for zero-step high-stakes results", asy
     runBrowserGuide({ intent: "explain", image, goal: "Explain this medication dose" }, { languageModel }),
     (error) => error instanceof GuideAdapterError && error.code === "UNSAFE_GUIDE",
   );
+});
+
+test("browser AI treats common medication names and dosage forms as high stakes", async () => {
+  for (const goal of [
+    "How many acetaminophen tablets should I take?",
+    "Explain these 500 mg capsules",
+  ]) {
+    const languageModel = {
+      async create() {
+        return {
+          async prompt() {
+            return JSON.stringify(validResult({
+              goal,
+              recommendedAction: {
+                title: "Take two tablets",
+                reason: "The package appears to show that amount.",
+              },
+              steps: [{ id: "take-tablets", title: "Take tablets", instruction: "Take two tablets now." }],
+              warnings: [],
+            }));
+          },
+          destroy() {},
+        };
+      },
+    };
+
+    await assert.rejects(
+      runBrowserGuide({ intent: "explain", image, goal }, { languageModel }),
+      (error) => error instanceof GuideAdapterError && error.code === "UNSAFE_GUIDE",
+    );
+  }
+});
+
+test("browser AI does not treat electronic tablets or ordinary weights as medication", async () => {
+  const languageModel = {
+    async create() {
+      return {
+        async prompt() {
+          return JSON.stringify(validResult({
+            goal: "Compare this Android tablet; it weighs 500 grams and inventory lists 20 units.",
+          }));
+        },
+        destroy() {},
+      };
+    },
+  };
+
+  const response = await runBrowserGuide({
+    intent: "explain",
+    image,
+    goal: "Compare this Android tablet; it weighs 500 grams and inventory lists 20 units.",
+  }, { languageModel });
+  assert.equal(response.result.processing.provider, "local");
+});
+
+test("browser AI rejects direct dosage recommendations even with a plausible warning", async () => {
+  for (const unsafeOutput of [
+    {
+      recommendedAction: {
+        title: "Take two tablets",
+        reason: "The package appears to show this amount.",
+      },
+      steps: [],
+    },
+    {
+      recommendedAction: {
+        title: "Ask a pharmacist",
+        reason: "A professional can confirm the label.",
+      },
+      steps: [{
+        id: "take-dose",
+        title: "Take the dose",
+        instruction: "Take 500 mg now.",
+        risk: "Taking the wrong amount can cause serious harm.",
+      }],
+    },
+    {
+      recommendedAction: {
+        title: "Take two every six hours",
+        reason: "This schedule should address the symptom.",
+      },
+      steps: [],
+    },
+    {
+      recommendedAction: {
+        title: "Do not take anything, take two every six hours",
+        reason: "This schedule should address the symptom.",
+      },
+      steps: [],
+    },
+  ]) {
+    const languageModel = {
+      async create() {
+        return {
+          async prompt() {
+            return JSON.stringify(validResult({
+              goal: "Understand this acetaminophen label",
+              warnings: ["Stop and contact a qualified pharmacist before changing medication."],
+              ...unsafeOutput,
+            }));
+          },
+          destroy() {},
+        };
+      },
+    };
+
+    await assert.rejects(
+      runBrowserGuide({
+        intent: "explain",
+        image,
+        goal: "Understand this acetaminophen label",
+      }, { languageModel }),
+      (error) => error instanceof GuideAdapterError && error.code === "UNSAFE_GUIDE",
+    );
+  }
+});
+
+test("browser AI distinguishes a safe dosage warning from an unsafe later clause", async () => {
+  const outputs = [
+    validResult({
+      goal: "Understand this acetaminophen label",
+      recommendedAction: {
+        title: "Don’t take acetaminophen until a pharmacist confirms it",
+        reason: "A pharmacist can review the visible label and personal risk factors.",
+      },
+      steps: [],
+      warnings: ["Don’t take two tablets without first contacting a qualified pharmacist."],
+    }),
+    validResult({
+      goal: "Understand this acetaminophen label",
+      steps: [],
+      warnings: ["Do not take anything yet. Take two tablets now."],
+    }),
+  ];
+  const languageModel = {
+    async create() {
+      return {
+        async prompt() {
+          return JSON.stringify(outputs.shift());
+        },
+        destroy() {},
+      };
+    },
+  };
+
+  const safeResponse = await runBrowserGuide({
+    intent: "explain",
+    image,
+    goal: "Understand this acetaminophen label",
+  }, { languageModel });
+  assert.equal(safeResponse.result.processing.provider, "local");
+
+  await assert.rejects(
+    runBrowserGuide({
+      intent: "explain",
+      image,
+      goal: "Understand this acetaminophen label",
+    }, { languageModel }),
+    (error) => error instanceof GuideAdapterError && error.code === "UNSAFE_GUIDE",
+  );
+});
+
+test("browser AI rejects placeholder warnings and risks for high-stakes guidance", async () => {
+  const unsafeResults = [
+    validResult({
+      intent: "troubleshoot",
+      goal: "Inspect electrical wiring",
+      warnings: ["Stop and there is no known risk here."],
+      steps: [{
+        id: "inspect",
+        title: "Inspect wiring",
+        instruction: "Inspect the wiring.",
+        risk: "Contact with energized wiring can cause an electrical shock.",
+      }],
+    }),
+    validResult({
+      intent: "troubleshoot",
+      goal: "Inspect electrical wiring",
+      warnings: ["Stop and never skip this step before continuing."],
+      steps: [{
+        id: "inspect",
+        title: "Inspect wiring",
+        instruction: "Inspect the wiring.",
+        risk: "There is a risk here, so be careful.",
+      }],
+    }),
+    validResult({
+      intent: "troubleshoot",
+      goal: "Inspect electrical wiring",
+      warnings: ["Stop and contact a qualified electrician before touching any wiring."],
+      steps: [{
+        id: "inspect",
+        title: "Inspect wiring",
+        instruction: "Inspect the wiring.",
+        risk: "No special risk is expected.",
+      }],
+    }),
+    validResult({
+      intent: "troubleshoot",
+      goal: "Inspect electrical wiring",
+      warnings: ["Important: never skip this step before continuing."],
+      steps: [{
+        id: "inspect",
+        title: "Inspect wiring",
+        instruction: "Inspect the wiring.",
+        risk: "Contact with energized wiring can cause an electrical shock.",
+      }],
+    }),
+  ];
+  const languageModel = {
+    async create() {
+      return {
+        async prompt() {
+          return JSON.stringify(unsafeResults.shift());
+        },
+        destroy() {},
+      };
+    },
+  };
+
+  for (let index = 0; index < 4; index += 1) {
+    await assert.rejects(
+      runBrowserGuide({ intent: "troubleshoot", image, goal: "Inspect electrical wiring" }, { languageModel }),
+      (error) => error instanceof GuideAdapterError && error.code === "UNSAFE_GUIDE",
+    );
+  }
+});
+
+test("browser AI times out a stalled model creation without locking the caller", async () => {
+  let createSignal;
+  const languageModel = {
+    create(options) {
+      createSignal = options.signal;
+      return new Promise(() => {});
+    },
+  };
+
+  await assert.rejects(
+    runBrowserGuide(
+      { intent: "identify", image, goal: "Identify this control" },
+      { languageModel, timeoutMs: 10 },
+    ),
+    (error) => error instanceof GuideAdapterError && error.code === "MODEL_TIMEOUT",
+  );
+  assert.equal(createSignal.aborted, true);
+});
+
+test("browser AI cancels a stalled prompt and destroys its model session", async () => {
+  const controller = new AbortController();
+  let destroyed = false;
+  let promptSignal;
+  const languageModel = {
+    async create() {
+      return {
+        prompt(_input, options) {
+          promptSignal = options.signal;
+          return new Promise(() => {});
+        },
+        destroy() {
+          destroyed = true;
+        },
+      };
+    },
+  };
+
+  const guide = runBrowserGuide(
+    { intent: "identify", image, goal: "Identify this control" },
+    { languageModel, signal: controller.signal, timeoutMs: 1_000 },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  controller.abort();
+
+  await assert.rejects(
+    guide,
+    (error) => error instanceof GuideAdapterError && error.code === "MODEL_CANCELLED",
+  );
+  assert.equal(promptSignal.aborted, true);
+  assert.equal(destroyed, true);
 });

@@ -4,7 +4,7 @@ A self-contained Manifest V3 side-panel extension that turns a user-requested sc
 
 ## Requirements
 
-- Chrome 138 or newer on desktop.
+- Chrome 148 or newer on desktop. Screenshot guidance depends on the multimodal Prompt API available at that release level.
 - A device supported by Chrome's Prompt API. Chrome may need to download its on-device model before the first guide.
 - A normal capturable webpage. Chrome's own pages and some protected pages cannot be captured.
 
@@ -33,7 +33,7 @@ The extension does not separately access the page URL, page title, selected text
 
 ## On-device guide safety
 
-The adapter keeps system policy separate from untrusted screenshot and user text, constrains and validates the structured result, blocks credential requests and destructive guidance, applies extra checks to high-stakes responses, rejects invented source links, and destroys the model session after each request.
+The adapter keeps system policy separate from untrusted screenshot and user text, constrains and validates the structured result, blocks credential requests, direct medication dosing, and destructive guidance, applies extra checks to high-stakes responses, rejects invented source links, and destroys the model session after each request. A visible cancel action and a three-minute timeout prevent a stalled model download or response from locking the panel.
 
 ## Verify and package
 

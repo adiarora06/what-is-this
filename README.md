@@ -27,7 +27,7 @@ The production API validates JPEG/PNG/WebP payloads, caps decoded images at 3 MB
 
 ## Try The Chrome Extension
 
-The extension is intentionally separate from the deployed website while sharing its guide response shape. It requires Chrome 138+ on a supported desktop device and uses Chrome's built-in AI entirely on-device; it has no mock or cloud fallback. Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select `apps/extension`; see [`apps/extension/README.md`](apps/extension/README.md) for privacy boundaries, verification, and Store packaging.
+The extension is intentionally separate from the deployed website while sharing its guide response shape. It requires Chrome 148+ on a supported desktop device because screenshot guidance uses the multimodal Prompt API, and it uses Chrome's built-in AI entirely on-device with no mock or cloud fallback. Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select `apps/extension`; see [`apps/extension/README.md`](apps/extension/README.md) for privacy boundaries, verification, and Store packaging.
 
 The public privacy policy is available at [`/privacy`](https://what-is-this-mobile.vercel.app/privacy), and copy-ready Chrome Web Store fields are maintained in [`apps/extension/STORE_LISTING.md`](apps/extension/STORE_LISTING.md).
 

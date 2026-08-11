@@ -9,7 +9,7 @@ const manifest = JSON.parse(await readFile(new URL("../manifest.json", import.me
 test("manifest is MV3 with only the permissions used by the on-device release", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.version, "0.3.0");
-  assert.equal(manifest.minimum_chrome_version, "138");
+  assert.equal(manifest.minimum_chrome_version, "148");
   assert.equal(manifest.homepage_url, "https://what-is-this-mobile.vercel.app/");
   assert.equal(manifest.incognito, "not_allowed");
   assert.deepEqual(manifest.permissions, ["activeTab", "sidePanel", "storage"]);
@@ -60,6 +60,7 @@ test("side panel loads no remote scripts or inline executable code", async () =>
   assert.match(html, /id="clarification-input"[\s\S]*maxlength="500"[\s\S]*required/);
   assert.match(html, /aria-describedby="clarification-text clarification-help clarification-count clarification-error"/);
   assert.match(html, /id="clarification-submit"[^>]*type="submit"[^>]*disabled>Update guide<\/button>/);
+  assert.match(html, /id="cancel-generation-button"[^>]*type="button"[^>]*hidden disabled>Cancel guide<\/button>/);
   assert.doesNotMatch(javascript, /chrome\.permissions\.request/);
   assert.doesNotMatch(javascript, /fetch\(|TRUSTED_BACKEND|cloud-api|deterministic-preview/);
   assert.doesNotMatch(serviceWorker, /chrome\.contextMenus/);
@@ -69,4 +70,13 @@ test("side panel loads no remote scripts or inline executable code", async () =>
   assert.match(serviceWorker, /chrome\.storage\.local\.remove\(LEGACY_SETTINGS_KEY\)/);
   assert.match(javascript, /elements\["clarification-form"\]\.addEventListener\("submit"/);
   assert.match(javascript, /elements\["recommendation-section"\]\.hidden = Boolean\(clarification\)/);
+  assert.match(javascript, /activeGenerationController\.abort\(\)/);
+  assert.match(javascript, /elements\["generate-button"\]\.focus\(\)/);
+  assert.match(javascript, /await sessionSaveQueue\.flush\(\{ value: session, windowId: currentWindowId \}\);\s+const response = await chrome\.runtime\.sendMessage/);
+  assert.match(javascript, /const browserResponse = runBrowserGuide\(request, guideOptions\);[\s\S]*await pendingSessionSave;[\s\S]*saveSession\(generatingSession/);
+  assert.match(javascript, /activeGenerationOperation && !isCurrentGeneration\(incoming, activeGenerationOperation\)/);
+  assert.match(javascript, /incoming\.panelRevision < session\.panelRevision/);
+  assert.match(javascript, /chrome\.runtime\.onMessage\.addListener[\s\S]*loadSession\(currentWindowId\)[\s\S]*applyIncomingSession\(value\)/);
+  assert.match(javascript, /elements\["intent-select"\]\.addEventListener\("change"[\s\S]*result: null[\s\S]*render\(\);\s+queueSessionSave\(\);/);
+  assert.match(javascript, /elements\["goal-input"\]\.addEventListener\("input"[\s\S]*result: null[\s\S]*render\(\);\s+queueSessionSave\(\);/);
 });

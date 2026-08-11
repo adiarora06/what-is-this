@@ -206,6 +206,13 @@ export default function Home() {
   const totalSaved = useMemo(() => boards.reduce((sum, board) => sum + board.items.length, 0), [boards]);
   const guideMode = guideIntent !== "identify";
   const guideProviderAvailable = guideProviderAvailableForChoice(preferences.providerChoice, availableGuideProviders);
+  const cloudProcessorLabel = preferences.providerChoice === "gemini"
+    ? "Gemini"
+    : preferences.providerChoice === "classifier"
+      ? "the private server classifier"
+      : guideMode
+        ? "Gemini or OpenAI, whichever is available"
+        : "Gemini, OpenAI, or the private server classifier, whichever is available";
   const guideBlockedReason = !guideMode
     ? undefined
     : preferences.providerChoice === "device"
@@ -1356,6 +1363,7 @@ export default function Home() {
             && (!guideMode || (preferences.providerChoice !== "classifier" && guideProviderAvailable))}
           securityReady={securityReady}
           privacyMode={preferences.providerChoice === "device" ? "device" : "remote"}
+          cloudProcessorLabel={cloudProcessorLabel}
           modelMessage={modelMessage}
           canRetry={Boolean(currentImage || (guideMode && guideSourceCard))}
           onStartCamera={() => void startCamera()}

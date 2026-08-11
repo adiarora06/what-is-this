@@ -109,11 +109,13 @@ export function GuideResultView(props: Props) {
           <p>{props.result.summary}</p>
         </section>
 
-        <section className="recommendationPanel" aria-labelledby="recommendation-heading">
-          <p className="eyebrow">Recommended next move</p>
-          <h2 id="recommendation-heading">{props.result.recommendedAction.title}</h2>
-          <p>{props.result.recommendedAction.reason}</p>
-        </section>
+        {!clarification ? (
+          <section className="recommendationPanel" aria-labelledby="recommendation-heading">
+            <p className="eyebrow">Recommended next move</p>
+            <h2 id="recommendation-heading">{props.result.recommendedAction.title}</h2>
+            <p>{props.result.recommendedAction.reason}</p>
+          </section>
+        ) : null}
 
         {props.result.steps.length > 0 ? (
           <section className="guideSteps" aria-labelledby="guide-steps-heading">

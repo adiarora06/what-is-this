@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  DeferredSessionSaveQueue,
   SESSION_KEY,
   beginCaptureSession,
   captureFailureSession,
@@ -13,14 +14,74 @@ import {
   sessionKeyForWindow,
 } from "../session-store.js";
 
+test("deferred session saves are cancelled or ordered before a capture boundary", async () => {
+  const timers = new Map();
+  let nextTimer = 1;
+  const writes = [];
+  let releaseFirstWrite;
+  const firstWriteGate = new Promise((resolve) => {
+    releaseFirstWrite = resolve;
+  });
+  const queue = new DeferredSessionSaveQueue(async (value) => {
+    writes.push(value);
+    if (value === "first") await firstWriteGate;
+  }, {
+    delay: 220,
+    setTimer(callback) {
+      const id = nextTimer;
+      nextTimer += 1;
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimer(id) {
+      timers.delete(id);
+    },
+  });
+  const runNextTimer = () => {
+    const next = timers.entries().next().value;
+    assert.ok(next, "a deferred save timer should be queued");
+    const [id, callback] = next;
+    timers.delete(id);
+    callback();
+  };
+
+  queue.schedule("discard-before-capture");
+  await queue.cancelAndWait();
+  assert.deepEqual(writes, []);
+
+  queue.schedule("superseded-before-capture");
+  await queue.flush("latest-before-capture");
+  assert.deepEqual(writes, ["latest-before-capture"], "capture flushes the latest snapshot and cancels its older timer");
+
+  queue.schedule("first");
+  runNextTimer();
+  await Promise.resolve();
+  queue.schedule("second");
+  runNextTimer();
+  await Promise.resolve();
+  assert.deepEqual(writes, ["latest-before-capture", "first"], "a newer save must wait for the in-flight write");
+
+  const captureBoundary = queue.cancelAndWait();
+  releaseFirstWrite();
+  await captureBoundary;
+  assert.deepEqual(writes, ["latest-before-capture", "first", "second"], "capture starts only after every started save settles");
+});
+
 test("clarification answers are session-only, bounded, and cleared by a fresh session", () => {
-  const normalized = normalizeSession({ clarificationAnswer: "a".repeat(700), clarificationError: "e".repeat(700) });
+  const normalized = normalizeSession({
+    clarificationAnswer: "a".repeat(700),
+    clarificationError: "e".repeat(700),
+    panelRevision: 7,
+  });
   assert.equal(normalized.clarificationAnswer.length, 500);
   assert.equal(normalized.clarificationError.length, 500);
+  assert.equal(normalized.panelRevision, 7);
   assert.equal(emptySession().clarificationAnswer, "");
   assert.equal(emptySession().clarificationError, null);
   assert.equal(normalizeSession({ clarificationAnswer: 123 }).clarificationAnswer, "");
   assert.equal(normalizeSession({ clarificationError: 123 }).clarificationError, null);
+  assert.equal(normalizeSession({ panelRevision: -1 }).panelRevision, 0);
+  assert.equal(normalizeSession({ panelRevision: "7" }).panelRevision, 0);
 });
 
 function usableSession(overrides = {}) {

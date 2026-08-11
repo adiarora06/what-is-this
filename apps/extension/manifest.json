@@ -4,7 +4,7 @@
   "name": "What Is This? Guide",
   "version": "0.3.0",
   "description": "Capture the visible tab and get private guidance with Chrome's on-device AI on supported desktop devices.",
-  "minimum_chrome_version": "138",
+  "minimum_chrome_version": "148",
   "homepage_url": "https://what-is-this-mobile.vercel.app/",
   "icons": {
     "16": "icons/icon-16.png",

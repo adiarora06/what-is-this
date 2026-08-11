@@ -208,6 +208,11 @@ button:disabled {
   color: white;
 }
 
+.cancel-button {
+  border: 1px solid var(--line);
+  color: var(--warning);
+}
+
 .secondary-button {
   background: #eceee7;
   color: var(--ink);
