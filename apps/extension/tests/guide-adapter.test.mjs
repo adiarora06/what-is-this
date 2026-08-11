@@ -4,14 +4,10 @@ import {
   BROWSER_GUIDE_RESPONSE_CONSTRAINT,
   GUIDE_RESULT_SCHEMA,
   GuideAdapterError,
-  TRUSTED_BACKEND_ORIGIN,
   buildGuideRequest,
   clarificationContext,
-  createPreviewGuide,
-  endpointForBackendOrigin,
   normalizeGuideResult,
   runBrowserGuide,
-  runCloudGuide,
 } from "../guide-adapter.js";
 
 const image = "data:image/jpeg;base64,AA==";
@@ -35,43 +31,25 @@ function validResult(overrides = {}) {
   };
 }
 
-test("buildGuideRequest matches the shared flat request and bounds the title", () => {
+test("buildGuideRequest retains only the screenshot and deliberately typed context", () => {
   const request = buildGuideRequest({
     intent: "identify",
     image,
-    title: "x".repeat(400),
-    selection: " selected text ",
-    url: "https://example.com/item",
+    goal: " Identify the controls ",
+    pageContext: " Clarification requested: Which model? ",
+    title: "Private title",
+    selection: "Private selection",
+    url: "https://example.com/private?token=secret",
   });
-  assert.equal(request.title.length, 300);
-  assert.equal(request.selection, "selected text");
-  assert.equal(request.url, "https://example.com/item");
-  assert.equal(request.image, image);
+  assert.deepEqual(request, {
+    intent: "identify",
+    image,
+    goal: "Identify the controls",
+    pageContext: "Clarification requested: Which model?",
+  });
 });
 
-test("page URLs drop query secrets and reject embedded credentials", () => {
-  const sanitized = buildGuideRequest({
-    intent: "identify",
-    image,
-    url: "https://example.com/account/setup?token=secret#private",
-  });
-  assert.equal(sanitized.url, "https://example.com/account/setup");
-
-  const rejected = buildGuideRequest({
-    intent: "identify",
-    image,
-    url: "https://user:password@example.com/account",
-  });
-  assert.equal("url" in rejected, false);
-});
-
-test("page URLs are capped to the shared 2,048-character contract", () => {
-  const request = buildGuideRequest({
-    intent: "identify",
-    image,
-    url: `https://example.com/${"a".repeat(3_000)}`,
-  });
-  assert.equal(request.url.length, 2_048);
+test("source URL output remains bounded while the on-device request accepts no page URL", () => {
   assert.equal(GUIDE_RESULT_SCHEMA.properties.sources.items.properties.url.maxLength, 2_048);
 });
 
@@ -99,24 +77,6 @@ test("clarification context collapses whitespace, bounds both fields, and requir
     () => clarificationContext("Which model?", "   "),
     (error) => error instanceof GuideAdapterError && error.code === "CLARIFICATION_REQUIRED",
   );
-});
-
-test("private preview returns the exact GuideResult shape with local processing", () => {
-  const response = createPreviewGuide({ intent: "identify", image, title: "Example" });
-  assert.equal(response.ok, true);
-  assert.equal(response.provider, "local");
-  assert.equal(response.result.processing.provider, "local");
-  assert.equal(response.result.processing.model, "deterministic-preview");
-  assert.equal(response.result.intent, "identify");
-  assert.match(response.result.warnings[0], /does not analyze image pixels/i);
-});
-
-test("private preview omits clarification when it provides preview steps and checks", () => {
-  const { result } = createPreviewGuide({ intent: "identify", image, title: "Example" });
-
-  assert.equal("clarificationQuestion" in result, false);
-  assert.ok(result.steps.length > 0);
-  assert.ok(result.completionChecks.length > 0);
 });
 
 test("result normalization rejects duplicate or malformed step ids", () => {
@@ -177,6 +137,27 @@ test("browser AI creates the model directly from the user-triggered path", async
   assert.equal(promptOptions.responseConstraint, BROWSER_GUIDE_RESPONSE_CONSTRAINT);
   assert.equal(response.result.processing.provider, "local");
   assert.equal(response.result.processing.model, "chrome-language-model");
+});
+
+test("browser AI never exposes model-invented source links", async () => {
+  const languageModel = {
+    async create() {
+      return {
+        async prompt() {
+          return JSON.stringify(validResult({
+            sources: [{ label: "Invented source", url: "https://example.com/claim" }],
+          }));
+        },
+        destroy() {},
+      };
+    },
+  };
+
+  const response = await runBrowserGuide(
+    { intent: "identify", image, goal: "Identify the controls" },
+    { languageModel },
+  );
+  assert.deepEqual(response.result.sources, []);
 });
 
 test("browser AI keeps clarification replies inside the untrusted JSON context", async () => {
@@ -244,6 +225,10 @@ test("browser AI accepts a safe clarification and uses the answer in a second lo
   );
   assert.equal(first.result.clarificationQuestion, "Which exact model number is visible?");
   assert.equal(first.result.steps.length, 0);
+  assert.deepEqual(first.result.recommendedAction, {
+    title: "Answer the clarification question",
+    reason: "One missing detail is needed before the guide can recommend a next step.",
+  });
 
   const followUpContext = clarificationContext(first.result.clarificationQuestion, "Model A-100");
   const second = await runBrowserGuide(
@@ -467,31 +452,4 @@ test("browser AI requires a stop warning for zero-step high-stakes results", asy
     runBrowserGuide({ intent: "explain", image, goal: "Explain this medication dose" }, { languageModel }),
     (error) => error instanceof GuideAdapterError && error.code === "UNSAFE_GUIDE",
   );
-});
-
-test("cloud adapter is locked to the trusted backend and omits cookies", async () => {
-  assert.equal(endpointForBackendOrigin(), `${TRUSTED_BACKEND_ORIGIN}/api/guide`);
-  assert.throws(() => endpointForBackendOrigin("https://example.com"), /only trusts/i);
-
-  let call;
-  const response = await runCloudGuide(
-    { intent: "identify", image, goal: "Identify the controls" },
-    {
-      backendOrigin: TRUSTED_BACKEND_ORIGIN,
-      fetchImpl: async (url, options) => {
-        call = { url, options };
-        return new Response(JSON.stringify({
-          ok: true,
-          result: validResult(),
-          provider: "local",
-          model: "test-model",
-          requestId: "req-test",
-        }), { status: 200, headers: { "Content-Type": "application/json" } });
-      },
-    },
-  );
-  assert.equal(call.url, `${TRUSTED_BACKEND_ORIGIN}/api/guide`);
-  assert.equal(call.options.credentials, "omit");
-  assert.equal(call.options.redirect, "error");
-  assert.equal(response.requestId, "req-test");
 });

@@ -1,4 +1,4 @@
-import { boundedText, sourceForContextMenu, sourceForTab } from "./capture-source.js";
+import { boundedText, sourceForTab } from "./capture-source.js";
 import {
   MAX_STORED_IMAGE_DATA_URL_LENGTH,
   MAX_STORED_IMAGE_DIMENSION,
@@ -13,25 +13,8 @@ import {
 } from "./session-store.js";
 import { WindowOperationRegistry } from "./window-operation-registry.js";
 
-const MENU_ITEMS = [
-  {
-    id: "guide-page",
-    title: "Guide me through this page",
-    contexts: ["page", "frame"],
-  },
-  {
-    id: "guide-selection",
-    title: "Explain this selection",
-    contexts: ["selection"],
-  },
-  {
-    id: "guide-image",
-    title: "Capture visible tab and confirm this image",
-    contexts: ["image"],
-  },
-];
-
 const MAX_STORED_JPEG_BYTES = Math.floor((MAX_STORED_IMAGE_DATA_URL_LENGTH - 64) * 3 / 4);
+const LEGACY_SETTINGS_KEY = "whatIsThisGuideSettingsV1";
 const captureOperations = new WindowOperationRegistry();
 
 function bytesToBase64(bytes) {
@@ -109,8 +92,7 @@ async function writeCaptureError(message, source, windowId, previous = emptySess
   return true;
 }
 
-async function captureTab(tab, source) {
-  const windowId = tab?.windowId;
+async function captureWindow(windowId, source) {
   if (!Number.isInteger(windowId)) {
     return { ok: false, error: "No active tab is available." };
   }
@@ -122,7 +104,7 @@ async function captureTab(tab, source) {
   await notifyPanel(windowId);
 
   try {
-    const rawDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+    const rawDataUrl = await chrome.tabs.captureVisibleTab(windowId, {
       format: "jpeg",
       quality: 80,
     });
@@ -133,7 +115,7 @@ async function captureTab(tab, source) {
     const session = {
       ...emptySession(),
       status: "ready",
-      intent: source.kind === "selection" ? "explain" : "identify",
+      intent: "identify",
       draft: {
         id: captureId,
         createdAt: new Date().toISOString(),
@@ -165,19 +147,7 @@ async function captureTab(tab, source) {
 }
 
 async function captureActiveTab(windowId) {
-  const [tab] = await chrome.tabs.query({ active: true, windowId });
-  return captureTab(tab, sourceForTab(tab));
-}
-
-function installMenus() {
-  chrome.contextMenus.removeAll(() => {
-    for (const item of MENU_ITEMS) {
-      chrome.contextMenus.create(item, () => {
-        // Reading lastError prevents a noisy console entry if Chrome is mid-reload.
-        void chrome.runtime.lastError;
-      });
-    }
-  });
+  return captureWindow(windowId, sourceForTab());
 }
 
 async function configureAction() {
@@ -189,7 +159,9 @@ async function configureAction() {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  installMenus();
+  // v0.2 stored only a processing-mode preference. v0.3 has one fixed,
+  // on-device mode and removes the obsolete local record during migration.
+  void chrome.storage.local.remove(LEGACY_SETTINGS_KEY).catch(() => undefined);
   void configureAction();
 });
 
@@ -198,17 +170,6 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 void configureAction();
-
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (!MENU_ITEMS.some((item) => item.id === info.menuItemId)) return;
-
-  if (Number.isInteger(tab?.id)) {
-    // Keep this call directly inside the context-menu gesture.
-    void chrome.sidePanel.open({ tabId: tab.id }).catch(() => undefined);
-  }
-
-  void captureTab(tab, sourceForContextMenu(info, tab));
-});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (

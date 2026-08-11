@@ -7,29 +7,11 @@ import {
   emptySession,
   isCurrentGeneration,
   loadSession,
-  normalizeSettings,
   normalizeSession,
   recoverInterruptedGeneration,
-  sanitizePageUrl,
   saveSession,
   sessionKeyForWindow,
 } from "../session-store.js";
-
-test("disabled cloud settings migrate back to private preview", () => {
-  assert.deepEqual(normalizeSettings({ adapter: "cloud-api" }), { adapter: "preview" });
-  assert.deepEqual(normalizeSettings({ adapter: "browser-ai" }), { adapter: "browser-ai" });
-});
-
-test("captured page URLs do not retain queries, fragments, or credentials", () => {
-  assert.equal(
-    sanitizePageUrl("https://example.com/account/setup?token=secret#private"),
-    "https://example.com/account/setup",
-  );
-  assert.equal(sanitizePageUrl("https://user:password@example.com/account"), "");
-  assert.equal(sanitizePageUrl("chrome://settings/privacy"), "");
-  assert.equal(sanitizePageUrl("not a url"), "");
-  assert.equal(sanitizePageUrl(`https://example.com/${"a".repeat(3_000)}`).length, 2_048);
-});
 
 test("clarification answers are session-only, bounded, and cleared by a fresh session", () => {
   const normalized = normalizeSession({ clarificationAnswer: "a".repeat(700), clarificationError: "e".repeat(700) });
@@ -47,7 +29,7 @@ function usableSession(overrides = {}) {
     status: "complete",
     draft: {
       id: "draft-old",
-      source: { kind: "visible-tab", pageUrl: "https://example.com/" },
+      source: { kind: "visible-tab" },
       image: { dataUrl: "data:image/jpeg;base64,AA==", originalDataUrl: null },
     },
     result: { subject: "Existing result" },

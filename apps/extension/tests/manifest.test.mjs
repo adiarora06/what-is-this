@@ -6,16 +6,20 @@ import test from "node:test";
 const extensionRoot = fileURLToPath(new URL("../", import.meta.url));
 const manifest = JSON.parse(await readFile(new URL("../manifest.json", import.meta.url), "utf8"));
 
-test("manifest is MV3 with only the permissions used by the MVP", () => {
+test("manifest is MV3 with only the permissions used by the on-device release", () => {
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.version, "0.2.0");
+  assert.equal(manifest.version, "0.3.0");
+  assert.equal(manifest.minimum_chrome_version, "138");
+  assert.equal(manifest.homepage_url, "https://what-is-this-mobile.vercel.app/");
   assert.equal(manifest.incognito, "not_allowed");
-  assert.deepEqual(manifest.permissions, ["activeTab", "contextMenus", "sidePanel", "storage"]);
+  assert.deepEqual(manifest.permissions, ["activeTab", "sidePanel", "storage"]);
+  assert.equal("host_permissions" in manifest, false);
   assert.equal("optional_host_permissions" in manifest, false);
   assert.equal(manifest.background.type, "module");
   assert.equal(manifest.side_panel.default_path, "sidepanel.html");
   assert.equal(manifest.permissions.includes("tabs"), false);
   assert.equal(manifest.permissions.includes("scripting"), false);
+  assert.equal(manifest.permissions.includes("contextMenus"), false);
   assert.equal(manifest.permissions.includes("aiLanguageModelOriginTrial"), false);
 });
 
@@ -37,20 +41,32 @@ test("every manifest entry point is packaged locally", async () => {
 test("side panel loads no remote scripts or inline executable code", async () => {
   const html = await readFile(new URL("../sidepanel.html", import.meta.url), "utf8");
   const javascript = await readFile(new URL("../sidepanel.js", import.meta.url), "utf8");
+  const serviceWorker = await readFile(new URL("../service-worker.js", import.meta.url), "utf8");
   assert.match(html, /<script type="module" src="sidepanel\.js"><\/script>/);
   assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/i);
   assert.doesNotMatch(html, /<script[^>]+src=["']https?:/i);
   assert.doesNotMatch(html, /\son[a-z]+=/i);
   assert.match(html, /<button id="center-crop-button"[^>]*type="button"[^>]*>Select center crop<\/button>/);
-  assert.match(html, /id="capture-button"[^>]*disabled/);
+  assert.match(html, /id="capture-button"[^>]*disabled>Capture visible tab privately<\/button>/);
   assert.match(html, /id="intent-select"[^>]*disabled/);
-  assert.match(html, /id="open-web-settings-button"[^>]*>Open web settings<\/button>/);
-  assert.match(html, /Opening Settings sends no screenshot, page address, selection, or account token\./);
+  assert.match(html, /id="capture-disclosure-heading">Before you capture<\/strong>/);
+  assert.match(html, /screenshot of only the visible area of your active tab/);
+  assert.match(html, /Do not capture passwords, security codes, financial or health records, or private messages/);
+  assert.match(html, /not sent to us or any third party/);
+  assert.match(html, /https:\/\/what-is-this-mobile\.vercel\.app\/privacy/);
+  assert.match(html, /id="browser-ai-status">Checking this device…<\/span>/);
+  assert.doesNotMatch(html, /Private preview|cloud-api|coming later|MVP/i);
   assert.match(html, /id="clarification-form"[^>]*class="clarification-form"/);
   assert.match(html, /id="clarification-input"[\s\S]*maxlength="500"[\s\S]*required/);
   assert.match(html, /aria-describedby="clarification-text clarification-help clarification-count clarification-error"/);
   assert.match(html, /id="clarification-submit"[^>]*type="submit"[^>]*disabled>Update guide<\/button>/);
   assert.doesNotMatch(javascript, /chrome\.permissions\.request/);
-  assert.match(javascript, /\?view=settings&source=extension/);
+  assert.doesNotMatch(javascript, /fetch\(|TRUSTED_BACKEND|cloud-api|deterministic-preview/);
+  assert.doesNotMatch(serviceWorker, /chrome\.contextMenus/);
+  assert.doesNotMatch(serviceWorker, /chrome\.tabs\.query/);
+  assert.match(serviceWorker, /chrome\.tabs\.captureVisibleTab\(windowId,/);
+  assert.doesNotMatch(serviceWorker, /\btab\.windowId\b/);
+  assert.match(serviceWorker, /chrome\.storage\.local\.remove\(LEGACY_SETTINGS_KEY\)/);
   assert.match(javascript, /elements\["clarification-form"\]\.addEventListener\("submit"/);
+  assert.match(javascript, /elements\["recommendation-section"\]\.hidden = Boolean\(clarification\)/);
 });

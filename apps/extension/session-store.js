@@ -1,8 +1,5 @@
-import { MAX_PAGE_URL_LENGTH } from "./extension-policy.js";
-
 export const SESSION_KEY = "whatIsThisGuideSessionV1";
 export const SESSION_KEY_PREFIX = `${SESSION_KEY}:window:`;
-export const SETTINGS_KEY = "whatIsThisGuideSettingsV1";
 
 export const GUIDE_INTENTS = Object.freeze([
   "identify",
@@ -11,10 +8,6 @@ export const GUIDE_INTENTS = Object.freeze([
   "compare",
   "guide",
 ]);
-
-export const DEFAULT_SETTINGS = Object.freeze({
-  adapter: "preview",
-});
 
 export function sessionKeyForWindow(windowId) {
   if (!Number.isInteger(windowId) || windowId < 0) {
@@ -45,28 +38,6 @@ export function emptySession() {
 
 function shortText(value, maxLength) {
   return typeof value === "string" ? value.slice(0, maxLength) : "";
-}
-
-export function sanitizePageUrl(value) {
-  const bounded = shortText(typeof value === "string" ? value.trim() : "", MAX_PAGE_URL_LENGTH);
-  if (!bounded) return "";
-
-  try {
-    const url = new URL(bounded);
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return "";
-    url.search = "";
-    url.hash = "";
-    return url.toString().slice(0, MAX_PAGE_URL_LENGTH);
-  } catch {
-    return "";
-  }
-}
-
-export function normalizeSettings(value) {
-  const adapter = value?.adapter;
-  return {
-    adapter: adapter === "browser-ai" ? adapter : "preview",
-  };
 }
 
 export function normalizeSession(value) {
@@ -198,15 +169,4 @@ export async function resetSession(windowId) {
 
 export async function removeSessionForWindow(windowId) {
   await chrome.storage.session.remove(sessionKeyForWindow(windowId));
-}
-
-export async function loadSettings() {
-  const stored = await chrome.storage.local.get(SETTINGS_KEY);
-  return normalizeSettings(stored[SETTINGS_KEY]);
-}
-
-export async function saveSettings(value) {
-  const settings = normalizeSettings(value);
-  await chrome.storage.local.set({ [SETTINGS_KEY]: settings });
-  return settings;
 }

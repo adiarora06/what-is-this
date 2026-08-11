@@ -1325,7 +1325,10 @@ export default function Home() {
         <button className="wordmark" onClick={() => changeView("scan")} aria-label="What Is This home">
           What Is This?
         </button>
-        <span className={`statusDot ${scanState === "error" ? "error" : ""}`} aria-hidden="true" />
+        <div className="topBarMeta">
+          <a className="extensionPrivacyLink" href="/privacy">Extension privacy</a>
+          <span className={`statusDot ${scanState === "error" ? "error" : ""}`} aria-hidden="true" />
+        </div>
       </header>
       <div className={`globalStatus ${scanState === "error" ? "error" : ""}`} role="status" aria-live="polite">
         {status}

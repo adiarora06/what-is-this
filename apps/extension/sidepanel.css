@@ -408,86 +408,59 @@ textarea {
   max-width: 80%;
 }
 
-.mode-fieldset {
-  border: 0;
-  display: grid;
-  gap: 7px;
-  margin: 0;
-  padding: 0;
-}
-
-.mode-fieldset legend {
-  font-size: 12px;
-  font-weight: 800;
-  margin-bottom: 7px;
-}
-
-.mode-option {
-  align-items: start;
-  border: 1px solid var(--line);
+.capture-disclosure,
+.model-card {
   border-radius: 10px;
   display: grid;
-  gap: 9px;
-  grid-template-columns: auto minmax(0, 1fr);
+  gap: 7px;
   padding: 10px;
 }
 
-.mode-option:has(input:checked) {
-  background: var(--accent-soft);
-  border-color: #b7d9d0;
+.capture-disclosure {
+  background: #f3f5fa;
+  border: 1px solid #d7ddeb;
 }
 
-.mode-option:has(input:disabled) {
-  opacity: 0.55;
+.capture-disclosure strong,
+.model-card strong {
+  font-size: 12px;
 }
 
-.mode-option input {
-  accent-color: var(--accent);
-  height: 19px;
-  margin: 1px 0 0;
-  width: 19px;
-}
-
-.mode-option span,
-.mode-option strong,
-.mode-option small {
-  display: block;
-}
-
-.mode-option strong {
-  font-size: 13px;
-  margin-bottom: 2px;
-}
-
-.mode-option small {
+.capture-disclosure p,
+.capture-disclosure a,
+.model-card span {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.4;
 }
 
-.cloud-setup {
-  align-items: center;
-  background: #f3f5fa;
-  border: 1px solid #d7ddeb;
-  border-radius: 10px;
-  display: grid;
-  gap: 9px;
-  padding: 10px;
+.capture-disclosure a,
+footer a {
+  color: var(--accent-strong);
+  font-weight: 800;
+  width: fit-content;
 }
 
-.cloud-setup > div {
+.model-card {
+  align-items: center;
+  background: var(--accent-soft);
+  border: 1px solid #b7d9d0;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.model-card > div {
   display: grid;
   gap: 3px;
 }
 
-.cloud-setup strong {
-  font-size: 12px;
-}
-
-.cloud-setup span {
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.4;
+.model-badge {
+  background: white;
+  border: 1px solid #c3dfd7;
+  border-radius: 999px;
+  color: var(--accent-strong) !important;
+  font-weight: 800;
+  padding: 5px 7px;
+  text-align: center;
 }
 
 code {
@@ -516,19 +489,6 @@ code {
   color: #4c6753;
   font-size: 11px;
   line-height: 1.4;
-}
-
-.data-boundary.remote {
-  background: var(--warm);
-  border-color: #ead79e;
-}
-
-.data-boundary.remote strong {
-  color: #70530b;
-}
-
-.data-boundary.remote span {
-  color: #6c5a2d;
 }
 
 .result-panel {
@@ -756,6 +716,11 @@ footer {
   line-height: 1.5;
   padding: 3px 5px 8px;
   text-align: center;
+}
+
+footer a {
+  display: inline-block;
+  margin-left: 3px;
 }
 
 [hidden] {

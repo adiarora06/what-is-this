@@ -1,50 +1,55 @@
-# What Is This? Guide — Chrome extension MVP
+# What Is This? Guide — Chrome extension
 
-A self-contained Manifest V3 side-panel extension for capturing the visible tab and turning it into a structured `GuideResult`. It has no build step, runtime package dependencies, content scripts, remote scripts, or broad site access.
+A self-contained Manifest V3 side-panel extension that turns a user-requested screenshot of the visible tab into a structured guide with Chrome's built-in on-device AI. The Store release has no build step, runtime dependencies, content scripts, remote scripts, network requests, analytics, accounts, or broad site access.
 
-The packaged toolbar and Store icons reuse the existing What Is This? app mark so the browser companion remains part of the same product family.
+## Requirements
 
-## Load it in Chrome
+- Chrome 138 or newer on desktop.
+- A device supported by Chrome's Prompt API. Chrome may need to download its on-device model before the first guide.
+- A normal capturable webpage. Chrome's own pages and some protected pages cannot be captured.
+
+When the on-device model is unavailable, the panel explains the compatibility requirement. It does not create a mock answer or upload the screenshot to a fallback service.
+
+## Load the unpacked extension
 
 1. Open `chrome://extensions`.
 2. Turn on **Developer mode**.
 3. Choose **Load unpacked** and select this `apps/extension` directory.
-4. Open a normal HTTPS page and click the extension’s toolbar action.
-5. Choose **Capture visible tab**, optionally drag over the preview or use the keyboard-accessible center crop, select an intent, and make a guide.
+4. Open a normal webpage and select the extension's toolbar icon.
+5. Read the capture disclosure, then choose **Capture visible tab privately**.
+6. Optionally crop the preview, choose an intent, add a goal, and select **Guide on this device**.
 
-You can also right-click a page, text selection, or image and choose the matching What Is This? command. The context-menu gesture captures the visible tab and opens the side panel.
+If the model asks for one missing detail, answer its clarification question and update the guide without taking another screenshot.
 
-## Processing modes
+## Privacy and permissions
 
-- **Private preview** is the default. It returns a deterministic, schema-valid mock result and explicitly does not claim to analyze screenshot pixels.
-- **Chrome on-device AI** is shown only when the feature-detected `LanguageModel` API supports text and image input. It separates system policy from untrusted page content, validates a structured result, applies a deterministic safety gate, destroys the model session after each request, and falls back only by asking the user to choose another mode. When the model needs one missing detail, you can answer its clarification question in the side panel and update the guide without recapturing the tab; the bounded reply stays in the same on-device processing flow. The manifest intentionally does not include the expired `aiLanguageModelOriginTrial` permission.
-- **Trusted guide API** is visibly disabled in this MVP. **Open web settings** opens the normal production Settings page without sending the screenshot, page address, selection, or an account token; it is a setup path, not an authorization exchange. The manifest grants no host access and the UI cannot upload a capture until a scoped, one-time verification handoff and explicit send consent are implemented.
+Before every new capture, the side panel explains what will be captured, why it is needed, how it is processed, how long it is retained, and that it is not sent to the developer or a third party.
 
-Production `/api/guide` may require a fresh Turnstile token. This no-remote-code MVP does not embed Turnstile or weaken the route, so the upload path stays disabled instead of sending an image into a request that production would reject.
+- `activeTab` allows one visible-viewport screenshot after the user invokes the extension on that tab.
+- `sidePanel` keeps the guide beside the current page.
+- `storage` keeps the current capture, typed context, and result in window-isolated `chrome.storage.session`.
 
-## Data and permissions
+The extension does not separately access the page URL, page title, selected text, DOM content, form fields, cookies, password manager, browsing history, account APIs, or background-tab activity. A screenshot can still contain any information visibly displayed on the page, so the panel warns against capturing passwords, security codes, financial or health records, and private messages. Captures are bounded JPEGs, Incognito is disabled, and session data is removed on Start over, when the window closes, or when the browser session ends. See the public [privacy policy](https://what-is-this-mobile.vercel.app/privacy).
 
-- `activeTab`: one visible-tab screenshot after an extension toolbar or context-menu gesture.
-- `contextMenus`: page, selection, and image entry points.
-- `sidePanel`: persistent extension UI beside the page.
-- `storage`: capture/draft/result state in `chrome.storage.session`; the processing-mode preference in `chrome.storage.local`.
-- No host permission is packaged in the MVP, Incognito is disabled, and captures cannot be uploaded from the panel. Opening web Settings creates a normal tab and does not broaden extension access.
+## On-device guide safety
 
-Screenshots are bounded JPEG captures of the visible viewport only. Each normal Chrome window has an isolated session; its capture and any in-progress clarification reply are removed on reset, when that window closes, or when Chrome exits. Protected browser pages and file URLs can reject capture. Opening the panel from Chrome’s generic side-panel picker may not grant `activeTab`; click the toolbar action on the target tab if capture asks for a fresh gesture.
+The adapter keeps system policy separate from untrusted screenshot and user text, constrains and validates the structured result, blocks credential requests and destructive guidance, applies extra checks to high-stakes responses, rejects invented source links, and destroys the model session after each request.
 
-## Shared contract
+## Verify and package
 
-The adapter sends `{ intent, image?, goal?, pageContext?, selection?, url?, title? }` and renders the repository’s `GuideResult` fields directly: subject, intent, goal, summary, confidence, evidence, recommendation, steps, alternatives, warnings, clarification question, completion checks, sources, and processing metadata.
-
-The extension keeps a local copy of the runtime validation limits because unpacked extensions cannot import the Next.js TypeScript module. Tests pin the important limits and provider values to prevent drift.
-
-## Verify
-
-Requires the repository’s Node 22+ runtime; there is nothing to install.
+The extension has no package dependencies. From the repository root:
 
 ```bash
-cd apps/extension
-npm run verify
+npm --prefix apps/extension run verify
+npm --prefix apps/extension run render:store
+npm --prefix apps/extension run validate:store-assets
+npm --prefix apps/extension run package:store
 ```
 
-`verify` syntax-checks all extension JavaScript and runs the dependency-free Node test suite for the manifest, adapter contract, clarification follow-ups, prompt-safety gate, storage isolation, capture recovery, trusted-origin boundary, and preview result.
+The packaging command validates version 0.3.0, requires exactly `activeTab`, `sidePanel`, and `storage`, and creates a deterministic allowlisted ZIP with `manifest.json` at its root:
+
+```text
+apps/extension/dist/what-is-this-guide-v0.3.0.zip
+```
+
+`render:store` creates three 1280×800 listing screenshots from the extension's actual HTML and CSS with deterministic sample data. `validate:store-assets` checks all required dimensions plus the Store icon's transparent safe area. Store listing copy, privacy answers, reviewer instructions, and the asset checklist are in `STORE_LISTING.md`. Store artwork is intentionally excluded from the upload ZIP.

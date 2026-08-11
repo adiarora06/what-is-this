@@ -2,14 +2,15 @@
   "manifest_version": 3,
   "incognito": "not_allowed",
   "name": "What Is This? Guide",
-  "version": "0.2.0",
-  "description": "Capture the visible tab and turn it into a private, structured guide.",
-  "minimum_chrome_version": "116",
+  "version": "0.3.0",
+  "description": "Capture the visible tab and get private guidance with Chrome's on-device AI on supported desktop devices.",
+  "minimum_chrome_version": "138",
+  "homepage_url": "https://what-is-this-mobile.vercel.app/",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
     "48": "icons/icon-48.png",
-    "128": "icons/icon-128.png"
+    "128": "icons/icon-128-store.png"
   },
   "action": {
     "default_title": "Open What Is This? Guide",
@@ -17,7 +18,7 @@
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",
       "48": "icons/icon-48.png",
-      "128": "icons/icon-128.png"
+      "128": "icons/icon-128-store.png"
     }
   },
   "background": {
@@ -29,7 +30,6 @@
   },
   "permissions": [
     "activeTab",
-    "contextMenus",
     "sidePanel",
     "storage"
   ],

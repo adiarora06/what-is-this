@@ -1,37 +1,31 @@
 import {
-  SETTINGS_KEY,
   isCurrentGeneration,
   loadSession,
-  loadSettings,
-  normalizeSettings,
   normalizeSession,
   recoverInterruptedGeneration,
   resetSession,
   saveSession,
-  saveSettings,
   sessionKeyForWindow,
 } from "./session-store.js";
 import { MAX_STORED_IMAGE_DATA_URL_LENGTH } from "./extension-policy.js";
 import {
   GuideAdapterError,
-  TRUSTED_BACKEND_ORIGIN,
   buildGuideRequest,
   clarificationContext,
   detectLanguageModel,
-  runGuide,
+  runBrowserGuide,
 } from "./guide-adapter.js";
 
 const elements = Object.fromEntries([
   "privacy-pill", "reset-button", "capture-empty", "preview-region", "preview-canvas",
   "preview-loading", "center-crop-button", "apply-crop-button", "restore-image-button", "source-summary",
   "capture-button", "capture-status", "intent-select", "goal-label", "goal-input",
-  "goal-help", "goal-count", "browser-ai-option", "browser-ai-status", "data-boundary",
-  "open-web-settings-button", "generate-button", "generate-status",
+  "goal-help", "goal-count", "browser-ai-status", "data-boundary", "generate-button", "generate-status",
   "result-panel", "confidence-badge", "result-heading", "result-goal", "result-summary",
   "warnings-section", "warnings-list", "clarification-section", "clarification-text",
   "clarification-form", "clarification-input", "clarification-count", "clarification-error",
-  "clarification-submit",
-  "recommendation-heading", "recommendation-reason", "evidence-section", "evidence-list",
+  "clarification-submit", "recommendation-section", "recommendation-heading", "recommendation-reason",
+  "evidence-section", "evidence-list",
   "steps-section", "steps-list", "checks-section", "checks-list", "alternatives-section",
   "alternatives-list", "sources-section", "sources-list", "processing-line",
 ].map((id) => [id, document.getElementById(id)]));
@@ -41,7 +35,6 @@ const context = canvas.getContext("2d");
 const goalRequired = new Set(["troubleshoot", "compare", "guide"]);
 
 let session = normalizeSession();
-let settings = { adapter: "preview" };
 let modelCapability = { supported: false, availability: "checking" };
 let previewImage = null;
 let previewUrl = "";
@@ -58,24 +51,6 @@ function setStatus(element, message, isError = false) {
 
 function clearNode(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
-}
-
-function sourceLabel(source) {
-  return {
-    "visible-tab": "Visible tab",
-    page: "Page context menu",
-    selection: "Text selection",
-    image: "Visible tab · confirm image target",
-  }[source?.kind] || "Visible tab";
-}
-
-function safePageLabel(value) {
-  try {
-    const url = new URL(value);
-    return `${url.hostname}${url.pathname === "/" ? "" : url.pathname}`.slice(0, 180);
-  } catch {
-    return "Page address unavailable";
-  }
 }
 
 function drawPreview() {
@@ -132,23 +107,11 @@ function renderSource(source) {
   clearNode(elements["source-summary"]);
   if (!source) return;
   const heading = document.createElement("strong");
-  heading.textContent = `${sourceLabel(source)}${source.pageTitle ? ` · ${source.pageTitle}` : ""}`;
+  heading.textContent = "Visible tab screenshot";
   elements["source-summary"].append(heading);
-  if (source.pageUrl) {
-    const address = document.createElement("span");
-    address.textContent = safePageLabel(source.pageUrl);
-    elements["source-summary"].append(address);
-  }
-  if (source.selection) {
-    const selection = document.createElement("span");
-    selection.textContent = `“${source.selection.slice(0, 180)}${source.selection.length > 180 ? "…" : ""}”`;
-    elements["source-summary"].append(selection);
-  }
-  if (source.kind === "image") {
-    const confirmation = document.createElement("span");
-    confirmation.textContent = "Confirm the intended image in the preview and crop around it if other images are visible.";
-    elements["source-summary"].append(confirmation);
-  }
+  const detail = document.createElement("span");
+  detail.textContent = "No page address, title, selection, DOM content, cookies, or browsing history is retained.";
+  elements["source-summary"].append(detail);
 }
 
 function renderGoalPolicy() {
@@ -167,42 +130,22 @@ function renderGoalPolicy() {
 
 function modelStatusText() {
   return {
-    checking: "Checking this device…",
+    checking: "Checking Chrome and this device…",
     available: "Ready; the screenshot stays on this device.",
     downloadable: "Supported; Chrome downloads its model on first use.",
     downloading: "Chrome is downloading its on-device model.",
-    unavailable: "Not supported by this Chrome/device combination.",
-  }[modelCapability.availability] || "Not available on this device.";
+    unavailable: "Unavailable. This requires Chrome 138+ on a supported desktop device.",
+  }[modelCapability.availability] || "Unavailable. This requires Chrome 138+ on a supported desktop device.";
 }
 
-function renderMode() {
-  const busy = session.status === "capturing" || session.status === "generating";
-  const ready = Number.isInteger(currentWindowId);
-  document.querySelectorAll('input[name="adapter"]').forEach((input) => {
-    input.checked = input.value === settings.adapter;
-    input.disabled = !ready || busy || input.value === "cloud-api";
-  });
-  const browserInput = document.querySelector('input[name="adapter"][value="browser-ai"]');
-  browserInput.disabled = !ready || busy || (modelCapability.availability !== "checking" && !modelCapability.supported);
+function renderModelStatus() {
   elements["browser-ai-status"].textContent = modelStatusText();
-
-  const cloud = settings.adapter === "cloud-api";
-  const browser = settings.adapter === "browser-ai";
-  elements["privacy-pill"].textContent = cloud ? "Trusted cloud" : browser ? "On-device AI" : "Private preview";
-  elements["data-boundary"].classList.toggle("remote", cloud);
+  elements["privacy-pill"].textContent = "On-device AI";
   const boundaryTitle = elements["data-boundary"].querySelector("strong");
   const boundaryText = elements["data-boundary"].querySelector("span");
-  if (cloud) {
-    boundaryTitle.textContent = "Screenshot leaves this browser";
-    boundaryText.textContent = `After you click Make guide and approve Chrome’s prompt, the capture is sent to ${TRUSTED_BACKEND_ORIGIN}/api/guide without cookies. It is never sent to the analyzed page.`;
-  } else if (browser) {
-    boundaryTitle.textContent = "Processed by Chrome on this device";
-    boundaryText.textContent = "Chrome may download its built-in model. The screenshot is not sent to a guide server.";
-  } else {
-    boundaryTitle.textContent = "Stays in this extension";
-    boundaryText.textContent = "The screenshot is kept only for this Chrome session; preview mode does not inspect its pixels.";
-  }
-  elements["generate-button"].textContent = cloud ? "Send to guide API" : browser ? "Guide on this device" : "Make private preview";
+  boundaryTitle.textContent = "Processed by Chrome on this device";
+  boundaryText.textContent = "Chrome may download its built-in model. The screenshot is not sent to us, a guide server, or the page you captured.";
+  elements["generate-button"].textContent = "Guide on this device";
 }
 
 function appendTextList(node, items) {
@@ -239,10 +182,10 @@ function renderResult(result) {
     elements["clarification-error"].hidden = !session.clarificationError;
     elements["clarification-submit"].disabled = clarificationBusy
       || !session.clarificationAnswer.trim()
-      || settings.adapter !== "browser-ai"
       || !modelCapability.supported;
     elements["clarification-submit"].textContent = clarificationBusy ? "Updating…" : "Update guide";
   }
+  elements["recommendation-section"].hidden = Boolean(clarification);
   elements["recommendation-heading"].textContent = result.recommendedAction.title;
   elements["recommendation-reason"].textContent = result.recommendedAction.reason;
 
@@ -321,18 +264,18 @@ function render() {
   elements["capture-empty"].hidden = hasImage;
   elements["preview-region"].hidden = !hasImage;
   elements["capture-button"].disabled = !ready || busy;
-  elements["capture-button"].textContent = session.status === "capturing" ? "Capturing…" : hasImage ? "Capture again" : "Capture visible tab";
+  elements["capture-button"].textContent = session.status === "capturing" ? "Capturing…" : hasImage ? "Capture again privately" : "Capture visible tab privately";
   elements["reset-button"].disabled = !ready || busy || (session.status === "idle" && !session.draft);
   elements["center-crop-button"].disabled = !hasImage || busy;
   elements["restore-image-button"].disabled = !session.draft?.image?.originalDataUrl || busy;
-  elements["generate-button"].disabled = !ready || !hasImage || busy || (settings.adapter === "browser-ai" && !modelCapability.supported);
+  elements["generate-button"].disabled = !ready || !hasImage || busy || !modelCapability.supported;
   elements["intent-select"].disabled = !ready || busy;
   elements["goal-input"].disabled = !ready || busy;
 
   if (document.activeElement !== elements["intent-select"]) elements["intent-select"].value = session.intent;
   if (document.activeElement !== elements["goal-input"]) elements["goal-input"].value = session.goal;
   renderGoalPolicy();
-  renderMode();
+  renderModelStatus();
   renderSource(session.draft?.source);
   if (hasImage) loadPreview(session.draft.image.dataUrl);
 
@@ -395,16 +338,6 @@ function boundedCanvasJpeg(sourceCanvas, initialQuality = 0.86) {
     working = smaller;
   }
   throw new GuideAdapterError("The crop is too large to keep safely. Select a smaller area and try again.", "IMAGE_TOO_LARGE");
-}
-
-function pageContextFor(source) {
-  return [
-    `Capture source: ${sourceLabel(source)}.`,
-    source?.kind === "image"
-      ? "The image command captured the full visible tab, not the underlying image file. Treat the intended image as confirmed only when the crop clearly isolates it."
-      : "",
-    source?.kind === "selection" ? "The screenshot accompanies selected page text." : "",
-  ].filter(Boolean).join(" ");
 }
 
 function selectCenterCrop() {
@@ -498,7 +431,6 @@ async function restoreImage() {
 async function generateGuide({ clarification = false } = {}) {
   const startingSession = session;
   const startingDraftId = startingSession.draft?.id;
-  const adapter = settings.adapter;
   const clarificationQuestion = clarification ? startingSession.result?.clarificationQuestion : "";
   const clarificationAnswer = clarification ? startingSession.clarificationAnswer.trim() : "";
   let operation = null;
@@ -506,19 +438,12 @@ async function generateGuide({ clarification = false } = {}) {
     if (clarification && (!clarificationQuestion || !clarificationAnswer)) {
       throw new GuideAdapterError("Answer the clarification question before updating the guide.", "CLARIFICATION_REQUIRED");
     }
-    const source = startingSession.draft?.source || {};
-    const pageContext = [
-      pageContextFor(source),
-      clarification ? clarificationContext(clarificationQuestion, clarificationAnswer) : "",
-    ].filter(Boolean).join("\n");
+    const pageContext = clarification ? clarificationContext(clarificationQuestion, clarificationAnswer) : "";
     const request = buildGuideRequest({
       intent: startingSession.intent,
       image: optimizedImageDataUrl(),
       goal: startingSession.goal,
       pageContext,
-      selection: source.selection,
-      url: source.pageUrl,
-      title: source.pageTitle,
     });
     if (session.draft?.id !== startingDraftId) return;
 
@@ -537,7 +462,6 @@ async function generateGuide({ clarification = false } = {}) {
     });
     render();
     const guideOptions = {
-      backendOrigin: TRUSTED_BACKEND_ORIGIN,
       onDownloadProgress(progress) {
         if (isCurrentGeneration(session, operation)) {
           setStatus(elements["generate-status"], `Downloading Chrome’s on-device model… ${Math.round(progress * 100)}%`);
@@ -546,7 +470,7 @@ async function generateGuide({ clarification = false } = {}) {
     };
     // Chrome requires LanguageModel.create() to run directly in the user
     // activation path. Start browser AI before awaiting session persistence.
-    const browserResponse = adapter === "browser-ai" ? runGuide(adapter, request, guideOptions) : null;
+    const browserResponse = runBrowserGuide(request, guideOptions);
     try {
       session = await saveSession(session, currentWindowId);
     } catch (error) {
@@ -554,7 +478,7 @@ async function generateGuide({ clarification = false } = {}) {
       operation = null;
       throw error;
     }
-    const response = browserResponse ? await browserResponse : await runGuide(adapter, request, guideOptions);
+    const response = await browserResponse;
     const current = await loadSession(currentWindowId);
     if (!isCurrentGeneration(current, operation) || !isCurrentGeneration(session, operation)) {
       if (!isCurrentGeneration(current, operation)) {
@@ -695,10 +619,6 @@ elements["clarification-input"].addEventListener("input", (event) => {
   renderResult(session.result);
   queueSessionSave();
 });
-elements["open-web-settings-button"].addEventListener("click", () => {
-  void chrome.tabs.create({ url: `${TRUSTED_BACKEND_ORIGIN}/?view=settings&source=extension` });
-});
-
 elements["intent-select"].addEventListener("change", (event) => {
   if (session.status === "capturing" || session.status === "generating") return;
   session = normalizeSession({
@@ -729,22 +649,10 @@ elements["goal-input"].addEventListener("input", (event) => {
   queueSessionSave();
 });
 
-document.querySelectorAll('input[name="adapter"]').forEach((input) => {
-  input.addEventListener("change", async () => {
-    if (!input.checked || input.disabled || session.status === "capturing" || session.status === "generating") return;
-    settings = await saveSettings({ ...settings, adapter: input.value });
-    render();
-  });
-});
-
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === "session" && sessionStorageKey && changes[sessionStorageKey]) {
     session = normalizeSession(changes[sessionStorageKey].newValue);
     render();
-  }
-  if (areaName === "local" && changes[SETTINGS_KEY]) {
-    settings = normalizeSettings(changes[SETTINGS_KEY].newValue || settings);
-    renderMode();
   }
 });
 
@@ -761,8 +669,7 @@ async function initialize() {
   if (!Number.isInteger(currentWindow?.id)) throw new Error("Chrome could not identify this browser window.");
   currentWindowId = currentWindow.id;
   sessionStorageKey = sessionKeyForWindow(currentWindowId);
-  const [loadedSession, loadedSettings] = await Promise.all([loadSession(currentWindowId), loadSettings()]);
-  settings = loadedSettings;
+  const loadedSession = await loadSession(currentWindowId);
   session = recoverInterruptedGeneration(loadedSession);
   if (loadedSession.status === "generating") {
     session = await saveSession(session, currentWindowId);

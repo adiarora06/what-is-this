@@ -16,14 +16,14 @@
             <p class="brand-name">Tab guide</p>
           </div>
         </div>
-        <span id="privacy-pill" class="privacy-pill">Private preview</span>
+        <span id="privacy-pill" class="privacy-pill">On-device AI</span>
       </header>
 
       <main>
         <section class="intro" aria-labelledby="main-heading">
           <p class="eyebrow">See it. Focus it. Understand it.</p>
           <h1 id="main-heading">What do you need from this tab?</h1>
-          <p>Capture only the visible area, trim it to what matters, then choose how it is processed.</p>
+          <p>Capture only the visible area, trim it to what matters, and receive a guide without sending the image to our servers.</p>
         </section>
 
         <section class="panel capture-panel" aria-labelledby="capture-heading">
@@ -33,6 +33,14 @@
               <h2 id="capture-heading">Visible tab</h2>
             </div>
             <button id="reset-button" class="text-button" type="button" disabled>Start over</button>
+          </div>
+
+          <div class="capture-disclosure" aria-labelledby="capture-disclosure-heading">
+            <strong id="capture-disclosure-heading">Before you capture</strong>
+            <p>When you press the button below, Chrome takes a screenshot of only the visible area of your active tab so its built-in AI can create your guide.</p>
+            <p>The screenshot includes everything currently visible. Do not capture passwords, security codes, financial or health records, or private messages.</p>
+            <p>The screenshot is processed on this device, kept only for the current Chrome session, and is not sent to us or any third party.</p>
+            <a href="https://what-is-this-mobile.vercel.app/privacy" target="_blank" rel="noreferrer">Read the privacy policy</a>
           </div>
 
           <div id="capture-empty" class="empty-state">
@@ -55,7 +63,7 @@
             <div id="source-summary" class="source-summary"></div>
           </div>
 
-          <button id="capture-button" class="primary-button wide" type="button" disabled>Capture visible tab</button>
+          <button id="capture-button" class="primary-button wide" type="button" disabled>Capture visible tab privately</button>
           <p id="capture-status" class="status-line" role="status" aria-live="polite">Ready when the tab is.</p>
         </section>
 
@@ -84,28 +92,12 @@
             <span class="field-footer"><small id="goal-help">A short clue can improve the result.</small><small id="goal-count">0/500</small></span>
           </label>
 
-          <fieldset class="mode-fieldset">
-            <legend>How should this be processed?</legend>
-
-            <label class="mode-option">
-              <input type="radio" name="adapter" value="preview" checked disabled>
-              <span><strong>Private preview</strong><small>Structured placeholder; never analyzes image pixels.</small></span>
-            </label>
-
-            <label class="mode-option" id="browser-ai-option">
-              <input type="radio" name="adapter" value="browser-ai" disabled>
-              <span><strong>Chrome on-device AI</strong><small id="browser-ai-status">Checking this device…</small></span>
-            </label>
-
-            <label class="mode-option">
-              <input type="radio" name="adapter" value="cloud-api" disabled>
-              <span><strong>Trusted guide API · coming later</strong><small>Disabled until the extension has a secure verification handoff.</small></span>
-            </label>
-          </fieldset>
-
-          <div class="cloud-setup">
-            <div><strong>Cloud connection stays on the website</strong><span>Opening Settings sends no screenshot, page address, selection, or account token.</span></div>
-            <button id="open-web-settings-button" class="secondary-button" type="button">Open web settings</button>
+          <div class="model-card" aria-labelledby="model-heading">
+            <div>
+              <strong id="model-heading">Chrome on-device AI</strong>
+              <span id="browser-ai-status">Checking this device…</span>
+            </div>
+            <span class="model-badge">No cloud upload</span>
           </div>
 
           <div id="data-boundary" class="data-boundary">
@@ -113,7 +105,7 @@
             <span>The screenshot is kept only for this Chrome session.</span>
           </div>
 
-          <button id="generate-button" class="scan-button wide" type="button" disabled>Make guide</button>
+          <button id="generate-button" class="scan-button wide" type="button" disabled>Guide on this device</button>
           <p id="generate-status" class="status-line" role="status" aria-live="polite"></p>
         </section>
 
@@ -190,7 +182,7 @@
       </main>
 
       <footer>
-        Screenshots are session-only. No remote scripts are loaded, Incognito is disabled, and this MVP does not upload captures.
+        Screenshots are session-only and processed by Chrome on this device. <a href="https://what-is-this-mobile.vercel.app/privacy" target="_blank" rel="noreferrer">Privacy policy</a>
       </footer>
     </div>
 

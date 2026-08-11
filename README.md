@@ -8,7 +8,7 @@ The app captures or uploads one image, identifies the main object, asks the pers
 
 - **Next.js on Vercel**: focused scan, result, saved-library, and settings views plus a hardened `/api/identify` proxy.
 - **Contextual guide API**: a shared, validated `/api/guide` contract for identify, explain, troubleshoot, compare, and step-by-step guide requests.
-- **Chrome side-panel companion**: an unpacked Manifest V3 extension in `apps/extension` that captures the visible tab after a user gesture, supports manual cropping, defaults to a private preview, and lets supported Chrome on-device AI clarify an answer without another capture.
+- **Chrome side-panel companion**: a publication-ready Manifest V3 extension in `apps/extension` that captures the visible tab only after a disclosed user action, supports manual cropping, and uses supported Chrome on-device AI to clarify an answer without another capture or cloud upload.
 - **Private on-device vision**: integrity-checked MobileNetV2 classification, barcode detection, and optional OCR loaded only when needed. ONNX Runtime's pinned WASM files are copied from the installed package and served from the app origin.
 - **Gemini vision provider**: high-accuracy image understanding when `GEMINI_API_KEY` is set.
 - **Python classifier service**: lightweight ONNX MobileNetV2 backend for Render's low-memory free/small instances.
@@ -27,9 +27,9 @@ The production API validates JPEG/PNG/WebP payloads, caps decoded images at 3 MB
 
 ## Try The Chrome Extension
 
-The extension is intentionally separate from the deployed website while sharing its guide response shape. Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select `apps/extension`; see [`apps/extension/README.md`](apps/extension/README.md) for the processing modes and privacy boundaries.
+The extension is intentionally separate from the deployed website while sharing its guide response shape. It requires Chrome 138+ on a supported desktop device and uses Chrome's built-in AI entirely on-device; it has no mock or cloud fallback. Open `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and select `apps/extension`; see [`apps/extension/README.md`](apps/extension/README.md) for privacy boundaries, verification, and Store packaging.
 
-The local preview and supported Chrome on-device AI modes do not send screenshots to the guide server. Cloud upload is disabled in the MVP manifest until an extension-safe Turnstile/auth handoff and explicit downstream-provider consent are complete.
+The public privacy policy is available at [`/privacy`](https://what-is-this-mobile.vercel.app/privacy), and copy-ready Chrome Web Store fields are maintained in [`apps/extension/STORE_LISTING.md`](apps/extension/STORE_LISTING.md).
 
 ## Run Locally
 
