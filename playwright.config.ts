@@ -15,6 +15,8 @@ export default defineConfig({
     { name: "mobile-small", use: { ...devices["Pixel 7"], viewport: { width: 320, height: 568 } } },
     { name: "mobile-compact", use: { ...devices["Pixel 7"], viewport: { width: 375, height: 812 } } },
     { name: "mobile-landscape", use: { ...devices["Pixel 7"], viewport: { width: 844, height: 390 } } },
+    { name: "tablet-portrait", use: { ...devices["Desktop Chrome"], viewport: { width: 834, height: 1112 } } },
+    { name: "tablet-landscape", use: { ...devices["Desktop Chrome"], viewport: { width: 1112, height: 834 } } },
     { name: "desktop-chromium", use: { ...devices["Desktop Chrome"] } },
   ],
   webServer: {

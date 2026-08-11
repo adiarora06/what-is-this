@@ -52,10 +52,16 @@ const providerNames: Record<IdentificationProvider, string> = {
   classifier: "Private server classifier",
 };
 
+const providerHelp: Record<Exclude<IdentificationProvider, "device">, string> = {
+  auto: "Uses compatible cloud services when available; object identification falls back to private on-device recognition.",
+  gemini: "Sends the selected image to the configured Gemini service for recognition and guided help.",
+  classifier: "Sends the selected image to the private server classifier for identification. Guided answers are unavailable in this mode.",
+};
+
 export default function SettingsView(props: Props) {
   const correct = props.feedback.filter((item) => item.wasCorrect).length;
   return (
-    <section className="viewStack" aria-labelledby="settings-heading">
+    <section className="viewStack settingsView" aria-labelledby="settings-heading">
       <header className="viewIntro compact">
         <p className="eyebrow">Control center</p>
         <h1 id="settings-heading" tabIndex={-1}>Settings</h1>
@@ -65,7 +71,7 @@ export default function SettingsView(props: Props) {
       <section className="settingsPanel" aria-labelledby="privacy-heading">
         <div className="sectionHeading"><div><p className="eyebrow">Privacy</p><h2 id="privacy-heading">Recognition & data</h2></div><span className={`backendPill ${props.backendOk ? "" : "offline"}`}>{props.backendLabel}</span></div>
         {props.backendDetail && <p className="supportingText">{props.backendDetail}</p>}
-        <label className="settingField">Recognition mode<select value={props.providerChoice} onChange={(event) => props.onProvider(event.target.value as IdentificationProvider)}>{props.availableProviders.map((provider) => <option key={provider} value={provider}>{providerNames[provider]}</option>)}</select><small>{props.providerChoice === "device" ? props.privateModelAvailable ? "Images remain in this browser. The verified model is downloaded and ready offline." : "Images remain in this browser. The first scan downloads a verified model of about 13 MB." : "Uses configured cloud recognition first, then switches to private on-device recognition if needed."}</small></label>
+        <label className="settingField">Recognition mode<select value={props.providerChoice} onChange={(event) => props.onProvider(event.target.value as IdentificationProvider)}>{props.availableProviders.map((provider) => <option key={provider} value={provider}>{providerNames[provider]}</option>)}</select><small>{props.providerChoice === "device" ? props.privateModelAvailable ? "Images remain in this browser. The verified model is downloaded and ready offline." : "Images remain in this browser. The first scan downloads a verified model of about 13 MB." : providerHelp[props.providerChoice]}</small></label>
         <label className="settingToggle"><span><strong>Read visible text</strong><small>Uses optional on-device OCR to make labels and packaging easier to identify.</small></span><input type="checkbox" checked={props.textAssist} onChange={(event) => props.onTextAssist(event.target.checked)} /></label>
         <label className="settingToggle"><span><strong>Include photos in feedback</strong><small>Off by default. You can still confirm or correct without sharing a photo.</small></span><input type="checkbox" checked={props.saveFeedbackPhotos} onChange={(event) => props.onFeedbackPhotos(event.target.checked)} /></label>
         <button className="secondaryButton" onClick={props.onClearModel} disabled={props.privateModelAvailable === false}>Remove downloaded private models</button>

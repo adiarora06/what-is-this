@@ -25,8 +25,9 @@ async function checkGemini(): Promise<GeminiHealth> {
   let value: GeminiHealth;
   try {
     // Validate the configured key/model without spending generation tokens.
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}?key=${apiKey}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}`, {
       method: "GET",
+      headers: { "x-goog-api-key": apiKey },
       cache: "no-store",
       signal: AbortSignal.timeout(3_000),
     });
@@ -90,34 +91,50 @@ export async function GET() {
   );
   const [gemini, classifier] = await Promise.all([checkGemini(), checkBackend()]);
   const geminiSelected = !["classifier", "cv"].includes(accuracyProvider);
+  const openaiFallbackAvailable = Boolean(
+    process.env.OPENAI_API_KEY?.trim() && process.env.ALLOW_OPENAI_FALLBACK === "true",
+  );
   const availableProviders = [
     "auto",
     ...(gemini.valid ? ["gemini"] : []),
     ...(classifier.ok ? ["classifier"] : []),
+    ...(openaiFallbackAvailable ? ["openai"] : []),
   ];
-  const providerOk = (geminiSelected && gemini.valid) || classifier.ok;
+  const availableGuideProviders = [
+    ...(gemini.valid ? ["gemini"] : []),
+    ...(openaiFallbackAvailable ? ["openai"] : []),
+  ];
+  const providerOk = (geminiSelected && gemini.valid) || classifier.ok || openaiFallbackAvailable;
+  const guideOk = availableGuideProviders.length > 0;
   const turnstileOk = !turnstileRequired || turnstileConfigured;
-  const ok = providerOk && turnstileOk;
+  const ok = (providerOk || guideOk) && turnstileOk;
   const errors = [
     gemini.configured && !gemini.valid ? gemini.error : undefined,
     classifier.configured && !classifier.ok ? classifier.error : undefined,
     !turnstileOk ? "Scan verification is not fully configured." : undefined,
   ].filter(Boolean);
 
-  return Response.json(
-    {
-      ok,
+  if (!ok) {
+    console.warn(JSON.stringify({
+      event: "vision.health.degraded",
       accuracyProvider,
       geminiConfigured: gemini.configured,
       geminiValid: gemini.valid,
-      geminiError: gemini.error,
-      availableProviders,
-      backendConfigured: classifier.configured,
-      backendError: classifier.error,
-      backend: classifier.backend,
+      classifierConfigured: classifier.configured,
+      classifierReady: classifier.ok,
       turnstileRequired,
       turnstileConfigured,
-      error: ok ? undefined : errors.join(" ") || "No vision provider is available.",
+      errors,
+    }));
+  }
+
+  return Response.json(
+    {
+      ok,
+      status: providerOk && turnstileOk ? "cloud-ready" : guideOk && turnstileOk ? "guide-ready" : "private-ready",
+      availableProviders,
+      availableGuideProviders,
+      error: ok ? undefined : "Cloud recognition is unavailable. On-device mode remains available.",
     },
     { status: ok ? 200 : 503, headers: { "Cache-Control": "no-store" } },
   );

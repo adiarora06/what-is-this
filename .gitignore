@@ -13,3 +13,4 @@ model-service/runs
 .vercel
 public/ort
 test-results/
+apps/extension/dist/
