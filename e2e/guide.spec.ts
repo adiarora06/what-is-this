@@ -221,6 +221,20 @@ test("empty saved previews continue with metadata only and restore the identific
   });
 
   await page.goto("/");
+  await expect.poll(() => page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("what-is-this", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const count = await new Promise<number>((resolve, reject) => {
+      const request = database.transaction("state", "readonly").objectStore("state").count();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    database.close();
+    return count;
+  })).toBe(4);
   await page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open("what-is-this", 1);
@@ -265,7 +279,9 @@ test("empty saved previews continue with metadata only and restore the identific
   });
   await page.reload();
 
-  await page.getByRole("button", { name: /Saved 1/ }).click();
+  const savedNavigation = page.getByRole("button", { name: /Saved 1/ });
+  await expect(savedNavigation).toBeVisible();
+  await savedNavigation.click();
   await page.getByRole("button", { name: "View" }).click();
   await expect(page.getByRole("heading", { name: "Saved control panel" })).toBeVisible();
   await page.getByRole("button", { name: "Explain", exact: true }).click();

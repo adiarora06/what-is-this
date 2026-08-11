@@ -532,7 +532,9 @@ export default function Home() {
     setStatus(input.preserveResult ? "Updating the guide with your answer…" : "Creating a careful guide…");
 
     try {
-      const image = await prepareGuideImage(input.image);
+      // Clarification follow-ups reuse the already prepared image and source identity.
+      // Re-encoding the image here can change its operation key after a failed retry.
+      const image = input.preserveResult ? input.image || undefined : await prepareGuideImage(input.image);
       if (sequence !== guideSequenceRef.current) return;
       if (input.image && isGuideImageDataUrl(input.image) && !image) {
         throw new GuideRequestError("The selected image could not be prepared safely.");
@@ -543,13 +545,15 @@ export default function Home() {
         ? input.pageContext || ""
         : [context.trim(), cardContext, input.pageContext || ""].filter(Boolean).join("\n")
       ).slice(0, 16_000);
-      sourceKey = guideOperationKey({
-        card: input.sourceCard,
-        intent: input.intent,
-        goal: input.goal,
-        image,
-      });
-      guideSourceKeyRef.current = sourceKey;
+      sourceKey = input.preserveResult
+        ? guideSourceKeyRef.current
+        : guideOperationKey({
+          card: input.sourceCard,
+          intent: input.intent,
+          goal: input.goal,
+          image,
+        });
+      if (!input.preserveResult) guideSourceKeyRef.current = sourceKey;
 
       const requestBody = buildWebGuideRequest({
         intent: input.intent,
