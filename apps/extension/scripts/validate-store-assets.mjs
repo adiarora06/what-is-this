@@ -13,6 +13,11 @@ const requiredAssets = new Map([
   ["store-assets/screenshot-02-guide-1280x800.png", [1280, 800]],
   ["store-assets/screenshot-03-clarification-1280x800.png", [1280, 800]],
   ["store-assets/small-promo-440x280.png", [440, 280]],
+  ["store-assets/marquee-promo-1400x560.png", [1400, 560]],
+]);
+const opaquePromotionalTiles = new Set([
+  "store-assets/small-promo-440x280.png",
+  "store-assets/marquee-promo-1400x560.png",
 ]);
 const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 
@@ -27,6 +32,7 @@ function parsePng(bytes, relativePath) {
 
   let offset = 8;
   let header = null;
+  let hasTransparencyChunk = false;
   const imageData = [];
   while (offset + 12 <= bytes.length) {
     const length = bytes.readUInt32BE(offset);
@@ -45,13 +51,15 @@ function parsePng(bytes, relativePath) {
       };
     } else if (type === "IDAT") {
       imageData.push(data);
+    } else if (type === "tRNS") {
+      hasTransparencyChunk = true;
     } else if (type === "IEND") {
       break;
     }
     offset = dataEnd + 4;
   }
   if (!header || imageData.length === 0) fail(`${relativePath} is missing required PNG chunks.`);
-  return { ...header, imageData };
+  return { ...header, imageData, hasTransparencyChunk };
 }
 
 function paeth(left, up, upperLeft) {
@@ -124,7 +132,11 @@ for (const [relativePath, [expectedWidth, expectedHeight]] of requiredAssets) {
   if (png.width !== expectedWidth || png.height !== expectedHeight) {
     fail(`${relativePath} must be ${expectedWidth}×${expectedHeight}; found ${png.width}×${png.height}.`);
   }
+  if (opaquePromotionalTiles.has(relativePath)
+    && (png.bitDepth !== 8 || png.colorType !== 2 || png.interlace !== 0 || png.hasTransparencyChunk)) {
+    fail(`${relativePath} must be a non-interlaced 24-bit RGB PNG with no alpha or transparency chunk.`);
+  }
   if (relativePath === "icons/icon-128-store.png") validateIconPadding(png, relativePath);
 }
 
-console.log(`Validated ${requiredAssets.size} Chrome Web Store image assets and the 16 px icon safe area.`);
+console.log(`Validated ${requiredAssets.size} Chrome Web Store image assets, opaque promotional tiles, and the 16 px icon safe area.`);
