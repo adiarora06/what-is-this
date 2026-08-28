@@ -7,6 +7,9 @@ tsconfig.tsbuildinfo
 .DS_Store
 __pycache__
 *.py[cod]
+.pytest_cache/
+coverage/
+playwright-report/
 model-service/.venv
 model-service/yolov*.pt
 model-service/runs
@@ -14,3 +17,7 @@ model-service/runs
 public/ort
 test-results/
 apps/extension/dist/
+
+# Local product-review output. Publication assets belong in
+# apps/extension/store-assets instead.
+docs/product-scope-audit-*/
