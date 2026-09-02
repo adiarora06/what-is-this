@@ -1,7 +1,7 @@
 fastapi>=0.141.1,<1
 uvicorn[standard]>=0.34,<1
 pillow>=12.3,<13
-python-multipart>=0.0.20
+python-multipart>=0.0.32
 numpy>=2.0,<3
 onnxruntime>=1.28.0,<2
 requests>=2.32,<3
