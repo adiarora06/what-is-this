@@ -33,7 +33,7 @@
     "@playwright/test": "^1.62.1",
     "@types/node": "^26.1.2",
     "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.2.4",
+    "@types/react-dom": "^19.2.7",
     "fake-indexeddb": "^6.2.5",
     "typescript": "^5.8.0",
     "vitest": "^4.1.10"
