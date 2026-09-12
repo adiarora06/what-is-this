@@ -1,5 +1,8 @@
-export const SESSION_KEY = "whatIsThisGuideSessionV1";
-export const SESSION_KEY_PREFIX = `${SESSION_KEY}:window:`;
+import { MAX_STORED_IMAGE_DATA_URL_LENGTH } from "./extension-policy.js";
+
+export const LEGACY_SESSION_KEY = "whatIsThisGuideSessionV1";
+export const SESSION_KEY = "whatIsThisGuideSessionV2";
+export const SESSION_KEY_PREFIX = `${SESSION_KEY}:tab:`;
 
 export const GUIDE_INTENTS = Object.freeze([
   "identify",
@@ -14,8 +17,8 @@ export class DeferredSessionSaveQueue {
     if (typeof write !== "function") throw new TypeError("A session writer is required.");
     this.write = write;
     this.delay = Number.isFinite(options.delay) ? Math.max(0, options.delay) : 220;
-    this.setTimer = options.setTimer || globalThis.setTimeout;
-    this.clearTimer = options.clearTimer || globalThis.clearTimeout;
+    this.setTimer = options.setTimer || ((callback, delay) => globalThis.setTimeout(callback, delay));
+    this.clearTimer = options.clearTimer || ((timer) => globalThis.clearTimeout(timer));
     this.onError = typeof options.onError === "function" ? options.onError : () => undefined;
     this.timer = null;
     this.pending = Promise.resolve();
@@ -61,27 +64,31 @@ export class DeferredSessionSaveQueue {
   }
 }
 
-export function sessionKeyForWindow(windowId) {
-  if (!Number.isInteger(windowId) || windowId < 0) {
-    throw new TypeError("A valid Chrome window id is required for guide session storage.");
+export function sessionKeyForTab(tabId) {
+  if (!Number.isInteger(tabId) || tabId < 0) {
+    throw new TypeError("A valid Chrome tab id is required for guide session storage.");
   }
-  return `${SESSION_KEY_PREFIX}${windowId}`;
+  return `${SESSION_KEY_PREFIX}${tabId}`;
 }
 
 export function emptySession() {
   return {
-    version: 1,
+    version: 2,
     status: "idle",
     draft: null,
     intent: "identify",
     goal: "",
     clarificationAnswer: "",
     clarificationError: null,
+    followUpQuestion: "",
+    followUpError: null,
+    completedStepIds: [],
     result: null,
     responseWarnings: [],
     requestId: null,
     captureId: null,
     generationId: null,
+    generationMode: null,
     panelRevision: 0,
     captureError: null,
     error: null,
@@ -93,18 +100,44 @@ function shortText(value, maxLength) {
   return typeof value === "string" ? value.slice(0, maxLength) : "";
 }
 
+function storedImageDataUrl(value) {
+  return typeof value === "string"
+    && value.length <= MAX_STORED_IMAGE_DATA_URL_LENGTH
+    && /^data:image\/(?:jpeg|png|webp);base64,/i.test(value)
+    ? value
+    : null;
+}
+
+function normalizeDraft(value) {
+  if (!value || typeof value !== "object") return null;
+  const image = value.image && typeof value.image === "object" ? value.image : null;
+  const dataUrl = storedImageDataUrl(image?.dataUrl);
+  const originalDataUrl = storedImageDataUrl(image?.originalDataUrl);
+  return {
+    id: shortText(value.id, 160),
+    createdAt: shortText(value.createdAt, 40),
+    source: value.source?.kind === "visible-tab" ? { kind: "visible-tab" } : null,
+    image: dataUrl ? {
+      dataUrl,
+      originalDataUrl,
+      mimeType: ["image/jpeg", "image/png", "image/webp"].includes(image?.mimeType) ? image.mimeType : "image/jpeg",
+      width: Number.isFinite(image?.width) && image.width > 0 ? Math.round(image.width) : null,
+      height: Number.isFinite(image?.height) && image.height > 0 ? Math.round(image.height) : null,
+    } : null,
+  };
+}
+
 export function normalizeSession(value) {
   const base = emptySession();
   if (!value || typeof value !== "object") return base;
 
   const allowedStatuses = new Set(["idle", "capturing", "ready", "generating", "complete", "error"]);
   const intent = GUIDE_INTENTS.includes(value.intent) ? value.intent : base.intent;
-  const draft = value.draft && typeof value.draft === "object" ? value.draft : null;
+  const draft = normalizeDraft(value.draft);
 
   return {
     ...base,
-    ...value,
-    version: 1,
+    version: 2,
     status: allowedStatuses.has(value.status) ? value.status : base.status,
     intent,
     goal: shortText(value.goal, 500),
@@ -112,18 +145,34 @@ export function normalizeSession(value) {
     clarificationError: typeof value.clarificationError === "string"
       ? shortText(value.clarificationError, 500) || null
       : null,
+    followUpQuestion: shortText(value.followUpQuestion, 500),
+    followUpError: typeof value.followUpError === "string"
+      ? shortText(value.followUpError, 500) || null
+      : null,
+    completedStepIds: Array.isArray(value.completedStepIds)
+      ? [...new Set(value.completedStepIds
+        .filter((item) => typeof item === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(item)))]
+        .slice(0, 12)
+      : [],
     draft,
+    result: value.result && typeof value.result === "object" ? value.result : null,
     responseWarnings: Array.isArray(value.responseWarnings)
       ? value.responseWarnings.filter((item) => typeof item === "string").slice(0, 8)
       : [],
     requestId: value.requestId ? shortText(value.requestId, 160) : null,
     captureId: value.captureId ? shortText(value.captureId, 160) : null,
     generationId: value.generationId ? shortText(value.generationId, 160) : null,
+    generationMode: ["initial", "retry", "clarification", "follow-up"].includes(value.generationMode)
+      ? value.generationMode
+      : null,
     panelRevision: Number.isSafeInteger(value.panelRevision) && value.panelRevision >= 0
       ? Math.min(value.panelRevision, Number.MAX_SAFE_INTEGER)
       : 0,
     captureError: value.captureError ? shortText(value.captureError, 500) : null,
     error: value.error ? shortText(value.error, 500) : null,
+    updatedAt: typeof value.updatedAt === "string" && Number.isFinite(Date.parse(value.updatedAt))
+      ? shortText(value.updatedAt, 40)
+      : base.updatedAt,
   };
 }
 
@@ -135,6 +184,7 @@ export function beginCaptureSession(value, captureId) {
     status: "capturing",
     captureId: shortText(captureId, 160) || null,
     generationId: null,
+    generationMode: null,
     captureError: null,
     error: null,
   });
@@ -149,6 +199,7 @@ export function captureFailureSession(previousValue, { error, source, draftId })
       status: previous.result ? "complete" : "ready",
       captureId: null,
       generationId: null,
+      generationMode: null,
       captureError: message,
       error: null,
     });
@@ -160,6 +211,7 @@ export function captureFailureSession(previousValue, { error, source, draftId })
     draft: source ? { id: shortText(draftId, 160), source, image: null } : null,
     captureError: message,
     error: message,
+    generationMode: null,
   });
 }
 
@@ -177,52 +229,71 @@ export function isCurrentGeneration(value, { draftId, generationId }) {
 export function recoverInterruptedGeneration(value) {
   const current = normalizeSession(value);
   if (current.status !== "generating") return current;
-  const hasClarificationToResume = typeof current.result?.clarificationQuestion === "string"
-    && Boolean(current.result.clarificationQuestion.trim());
+  const canResumeFromPriorResult = Boolean(current.result)
+    && ["clarification", "follow-up"].includes(current.generationMode);
   return normalizeSession({
     ...current,
     status: "error",
-    result: hasClarificationToResume ? current.result : null,
-    responseWarnings: hasClarificationToResume ? current.responseWarnings : [],
-    requestId: hasClarificationToResume ? current.requestId : null,
+    result: canResumeFromPriorResult ? current.result : null,
+    responseWarnings: canResumeFromPriorResult ? current.responseWarnings : [],
+    requestId: canResumeFromPriorResult ? current.requestId : null,
     generationId: null,
-    error: hasClarificationToResume
-      ? "The clarification update was interrupted when the panel closed. Your answer was kept; try updating the guide again."
+    generationMode: null,
+    error: canResumeFromPriorResult
+      ? `The ${current.generationMode === "clarification" ? "clarification update" : "follow-up"} was interrupted when the panel closed. Your text was kept; try again.`
       : "The previous guide was interrupted when the panel closed. Try again.",
   });
 }
 
-export async function loadSession(windowId) {
-  const key = sessionKeyForWindow(windowId);
-  const stored = await chrome.storage.session.get([key, SESSION_KEY]);
+export async function loadSession(tabId) {
+  const key = sessionKeyForTab(tabId);
+  const stored = await chrome.storage.session.get([key, SESSION_KEY, LEGACY_SESSION_KEY]);
   if (stored[key]) return normalizeSession(stored[key]);
-  if (stored[SESSION_KEY]) {
-    // The legacy record has no owning window. Discard it instead of exposing a
-    // potentially sensitive capture in whichever window happens to load first.
-    await chrome.storage.session.remove(SESSION_KEY);
+  const obsoleteKeys = [SESSION_KEY, LEGACY_SESSION_KEY].filter((legacyKey) => stored[legacyKey]);
+  if (obsoleteKeys.length) {
+    // Legacy records have no owning tab. Discard them instead of exposing a
+    // potentially sensitive capture in whichever tab happens to load first.
+    await chrome.storage.session.remove(obsoleteKeys);
   }
   return emptySession();
 }
 
-export async function saveSession(value, windowId) {
-  const key = sessionKeyForWindow(windowId);
+export async function saveSession(value, tabId) {
+  const key = sessionKeyForTab(tabId);
   const session = normalizeSession({ ...value, updatedAt: new Date().toISOString() });
   await chrome.storage.session.set({ [key]: session });
   return session;
 }
 
-export async function patchSession(patch, windowId) {
-  const current = await loadSession(windowId);
-  return saveSession({ ...current, ...patch }, windowId);
+export async function pruneTabSessions(keepTabId, maxSessions = 3) {
+  const keepKey = sessionKeyForTab(keepTabId);
+  const limit = Math.max(1, Math.min(6, Math.round(maxSessions) || 3));
+  const stored = await chrome.storage.session.get(null);
+  const sessions = Object.entries(stored)
+    .filter(([key]) => key.startsWith(SESSION_KEY_PREFIX))
+    .map(([key, value]) => ({
+      key,
+      updatedAt: Date.parse(value?.updatedAt || "") || 0,
+      keep: key === keepKey,
+    }))
+    .sort((left, right) => Number(right.keep) - Number(left.keep) || right.updatedAt - left.updatedAt);
+  const obsoleteKeys = sessions.slice(limit).map(({ key }) => key);
+  if (obsoleteKeys.length) await chrome.storage.session.remove(obsoleteKeys);
+  return obsoleteKeys;
 }
 
-export async function resetSession(windowId) {
-  const key = sessionKeyForWindow(windowId);
+export async function patchSession(patch, tabId) {
+  const current = await loadSession(tabId);
+  return saveSession({ ...current, ...patch }, tabId);
+}
+
+export async function resetSession(tabId) {
+  const key = sessionKeyForTab(tabId);
   const session = emptySession();
   await chrome.storage.session.set({ [key]: session });
   return session;
 }
 
-export async function removeSessionForWindow(windowId) {
-  await chrome.storage.session.remove(sessionKeyForWindow(windowId));
+export async function removeSessionForTab(tabId) {
+  await chrome.storage.session.remove(sessionKeyForTab(tabId));
 }

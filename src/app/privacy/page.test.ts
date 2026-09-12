@@ -16,7 +16,7 @@ describe("Chrome extension privacy policy", () => {
   it("has public-page metadata and the required effective date", () => {
     expect(metadata.title).toBe("Chrome Extension Privacy Policy | What Is This?");
     expect(metadata.description).toContain("What Is This? Guide Chrome extension");
-    expect(pageText()).toContain("Last updated August 11, 2026");
+    expect(pageText()).toContain("Last updated September 12, 2026");
   });
 
   it("is directly reachable from the declared product homepage", async () => {
@@ -29,7 +29,7 @@ describe("Chrome extension privacy policy", () => {
     const text = pageText();
 
     expect(text).toContain("A screenshot of the visible area of the active tab");
-    expect(text).toContain("Text you enter, such as a goal or clarification answer");
+    expect(text).toContain("Text you enter, such as a goal, clarification answer, or follow-up question");
     expect(text).toContain("Chrome's built-in on-device LanguageModel API");
     expect(text).toContain("does not separately access page URLs, page titles, selected text, DOM content, form fields, cookies");
     expect(text).toContain("can therefore contain personal information, messages, usernames, security codes, financial details, or health information");
@@ -42,7 +42,9 @@ describe("Chrome extension privacy policy", () => {
     const text = pageText();
 
     expect(text).toContain("chrome.storage.session");
-    expect(text).toContain("writes no captures, typed context, guides, or settings to local or synchronized storage");
+    expect(text).toContain("separated by tab");
+    expect(text).toContain("no more than three recently used tab sessions");
+    expect(text).toContain("writes no captures, typed context, guides, progress, or settings to local or synchronized storage");
     expect(text).toContain("deletes that build's obsolete local processing-mode preference");
     for (const permission of ["activeTab", "sidePanel", "storage"]) {
       expect(text).toContain(permission);

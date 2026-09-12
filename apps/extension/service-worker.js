@@ -8,14 +8,44 @@ import {
   captureFailureSession,
   emptySession,
   loadSession,
-  removeSessionForWindow,
+  pruneTabSessions,
+  removeSessionForTab,
   saveSession,
 } from "./session-store.js";
-import { WindowOperationRegistry } from "./window-operation-registry.js";
+import { OperationRegistry } from "./operation-registry.js";
 
 const MAX_STORED_JPEG_BYTES = Math.floor((MAX_STORED_IMAGE_DATA_URL_LENGTH - 64) * 3 / 4);
 const LEGACY_SETTINGS_KEY = "whatIsThisGuideSettingsV1";
-const captureOperations = new WindowOperationRegistry();
+const ACTIVE_TAB_KEY_PREFIX = "whatIsThisGuideActiveTabV1:window:";
+const captureOperations = new OperationRegistry();
+const activeTabsByWindow = new Map();
+
+function activeTabKey(windowId) {
+  return `${ACTIVE_TAB_KEY_PREFIX}${windowId}`;
+}
+
+async function setActiveTabContext({ tabId, windowId, captureGranted = false }) {
+  if (!Number.isInteger(tabId) || !Number.isInteger(windowId)) return null;
+  const previous = activeTabsByWindow.get(windowId);
+  if (Number.isInteger(previous?.tabId) && previous.tabId !== tabId) {
+    captureOperations.remove(previous.tabId);
+  }
+  const context = { tabId, windowId, captureGranted: Boolean(captureGranted), updatedAt: new Date().toISOString() };
+  activeTabsByWindow.set(windowId, context);
+  await chrome.storage.session.set({ [activeTabKey(windowId)]: context });
+  return context;
+}
+
+async function getActiveTabContext(windowId) {
+  if (!Number.isInteger(windowId)) return null;
+  if (activeTabsByWindow.has(windowId)) return activeTabsByWindow.get(windowId);
+  const key = activeTabKey(windowId);
+  const stored = await chrome.storage.session.get(key);
+  const context = stored[key];
+  if (!Number.isInteger(context?.tabId) || context.windowId !== windowId) return null;
+  activeTabsByWindow.set(windowId, context);
+  return context;
+}
 
 function bytesToBase64(bytes) {
   const chunks = [];
@@ -68,40 +98,47 @@ async function boundCapturedImage(dataUrl) {
   throw new Error("The screenshot could not be reduced enough for session storage.");
 }
 
-async function notifyPanel(windowId) {
+async function notifyPanel(windowId, tabId, captureGranted = false) {
   try {
-    await chrome.runtime.sendMessage({ type: "GUIDE_SESSION_UPDATED", windowId });
+    await chrome.runtime.sendMessage({ type: "GUIDE_SESSION_UPDATED", windowId, tabId, captureGranted });
   } catch {
     // The panel may not be open yet. It will read the session when it mounts.
   }
 }
 
-async function writeCaptureError(message, source, windowId, previous = emptySession(), expectedCaptureId = null) {
+async function writeCaptureError(message, source, tabId, windowId, previous = emptySession(), expectedCaptureId = null, captureGranted = true) {
   if (expectedCaptureId) {
-    if (!captureOperations.isCurrent(windowId, expectedCaptureId)) return false;
-    const current = await loadSession(windowId);
+    if (!captureOperations.isCurrent(tabId, expectedCaptureId)) return false;
+    const current = await loadSession(tabId);
     if (current.captureId !== expectedCaptureId) return false;
   }
   await saveSession(captureFailureSession(previous, {
     error: boundedText(message, 500),
     source,
     draftId: expectedCaptureId || crypto.randomUUID(),
-  }), windowId);
-  captureOperations.clear(windowId, expectedCaptureId);
-  await notifyPanel(windowId);
+  }), tabId);
+  captureOperations.clear(tabId, expectedCaptureId);
+  await notifyPanel(windowId, tabId, captureGranted);
   return true;
 }
 
-async function captureWindow(windowId, source) {
-  if (!Number.isInteger(windowId)) {
+async function captureTab(tabId, windowId, source) {
+  if (!Number.isInteger(tabId) || !Number.isInteger(windowId)) {
     return { ok: false, error: "No active tab is available." };
   }
-  const previous = await loadSession(windowId);
+  const activeContext = await getActiveTabContext(windowId);
+  if (activeContext?.tabId !== tabId) {
+    return { ok: false, error: "The active tab changed. Use Capture again on the tab you want to guide." };
+  }
+  if (!activeContext.captureGranted) {
+    return { ok: false, error: "Click the extension’s toolbar icon on this tab before capturing it." };
+  }
+  const previous = await loadSession(tabId);
 
   const captureId = crypto.randomUUID();
-  captureOperations.start(windowId, captureId);
-  await saveSession(beginCaptureSession(previous, captureId), windowId);
-  await notifyPanel(windowId);
+  captureOperations.start(tabId, captureId);
+  await saveSession(beginCaptureSession(previous, captureId), tabId);
+  await notifyPanel(windowId, tabId, true);
 
   try {
     const rawDataUrl = await chrome.tabs.captureVisibleTab(windowId, {
@@ -109,8 +146,13 @@ async function captureWindow(windowId, source) {
       quality: 80,
     });
     const image = await boundCapturedImage(rawDataUrl);
-    const current = await loadSession(windowId);
-    if (!captureOperations.isCurrent(windowId, captureId) || current.captureId !== captureId) return { ok: false, superseded: true };
+    // Reserve the session budget only after Chrome produced a usable capture.
+    await pruneTabSessions(tabId, 3);
+    const currentContext = await getActiveTabContext(windowId);
+    const current = await loadSession(tabId);
+    if (currentContext?.tabId !== tabId || !captureOperations.isCurrent(tabId, captureId) || current.captureId !== captureId) {
+      return { ok: false, superseded: true };
+    }
 
     const session = {
       ...emptySession(),
@@ -129,37 +171,44 @@ async function captureWindow(windowId, source) {
         },
       },
     };
-    await saveSession(session, windowId);
-    captureOperations.clear(windowId, captureId);
-    await notifyPanel(windowId);
+    await saveSession(session, tabId);
+    await pruneTabSessions(tabId, 3);
+    captureOperations.clear(tabId, captureId);
+    await notifyPanel(windowId, tabId, true);
     return { ok: true };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error || "");
+    const lostCaptureGrant = /activeTab|permission|fresh tab gesture|must be invoked/i.test(detail);
     const message = /quota|session storage|too large|reduced enough/i.test(detail)
       ? "This screenshot is too large to keep safely. The previous capture, if any, was retained."
-      : /activeTab|permission|capture/i.test(detail)
+      : lostCaptureGrant
         ? "Chrome needs a fresh tab gesture. Click the extension’s toolbar icon on this tab, then try Capture again."
         : "This tab cannot be captured. Protected Chrome pages and file pages may restrict screenshots.";
-    const written = await writeCaptureError(message, source, windowId, previous, captureId);
+    if (lostCaptureGrant) {
+      await setActiveTabContext({ tabId, windowId, captureGranted: false }).catch(() => undefined);
+    }
+    const written = await writeCaptureError(message, source, tabId, windowId, previous, captureId, !lostCaptureGrant);
     if (!written) return { ok: false, superseded: true };
     return { ok: false, error: message };
   }
 }
 
-async function captureActiveTab(windowId) {
-  return captureWindow(windowId, sourceForTab());
+async function captureActiveTab(tabId, windowId) {
+  return captureTab(tabId, windowId, sourceForTab());
 }
 
 async function configureAction() {
   try {
-    await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+    // Keep action clicks observable so the worker can bind the global panel to
+    // the tab that granted activeTab before opening it.
+    await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false });
   } catch (error) {
     console.warn("The side-panel action could not be configured.", error);
   }
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  // v0.2 stored only a processing-mode preference. v0.3 has one fixed,
+  // v0.2 stored only a processing-mode preference. v0.3 and later have one fixed,
   // on-device mode and removes the obsolete local record during migration.
   void chrome.storage.local.remove(LEGACY_SETTINGS_KEY).catch(() => undefined);
   void configureAction();
@@ -171,14 +220,47 @@ chrome.runtime.onStartup.addListener(() => {
 
 void configureAction();
 
+chrome.action.onClicked.addListener((tab) => {
+  if (!Number.isInteger(tab?.id) || !Number.isInteger(tab?.windowId)) return;
+  // Open synchronously from the action gesture; session bookkeeping may finish
+  // afterward without consuming Chrome's transient activation.
+  const openPanel = chrome.sidePanel.open({ windowId: tab.windowId });
+  void openPanel.catch(() => undefined);
+  void setActiveTabContext({ tabId: tab.id, windowId: tab.windowId, captureGranted: true })
+    .then(() => notifyPanel(tab.windowId, tab.id, true))
+    .catch(() => undefined);
+});
+
+chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
+  captureOperations.remove(tabId);
+  void setActiveTabContext({ tabId, windowId, captureGranted: false })
+    .then(() => notifyPanel(windowId, tabId))
+    .catch(() => undefined);
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo?.status !== "loading" || !Number.isInteger(tab?.windowId)) return;
+  void getActiveTabContext(tab.windowId)
+    .then((activeContext) => activeContext?.tabId === tabId && activeContext.captureGranted
+      ? setActiveTabContext({ tabId, windowId: tab.windowId, captureGranted: false })
+      : null)
+    .then((updated) => updated ? notifyPanel(tab.windowId, tabId, false) : undefined)
+    .catch(() => undefined);
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (
     sender.id !== chrome.runtime.id ||
-    message?.type !== "CAPTURE_ACTIVE_TAB" ||
+    !["CAPTURE_ACTIVE_TAB", "GET_ACTIVE_TAB_CONTEXT"].includes(message?.type) ||
     !Number.isInteger(message.windowId)
   ) return false;
 
-  void captureActiveTab(message.windowId)
+  const operation = message.type === "GET_ACTIVE_TAB_CONTEXT"
+    ? getActiveTabContext(message.windowId).then((context) => ({ ok: Boolean(context), context }))
+    : Number.isInteger(message.tabId)
+      ? captureActiveTab(message.tabId, message.windowId)
+      : Promise.resolve({ ok: false, error: "No active tab is available." });
+  void operation
     .then(sendResponse)
     .catch((error) => sendResponse({
       ok: false,
@@ -188,6 +270,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.windows.onRemoved.addListener((windowId) => {
-  captureOperations.removeWindow(windowId);
-  void removeSessionForWindow(windowId).catch(() => undefined);
+  activeTabsByWindow.delete(windowId);
+  void chrome.storage.session.remove(activeTabKey(windowId)).catch(() => undefined);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  captureOperations.remove(tabId);
+  void removeSessionForTab(tabId).catch(() => undefined);
 });

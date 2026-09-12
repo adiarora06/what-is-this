@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { dirname, extname, join, resolve } from "node:path";
@@ -9,7 +10,8 @@ import { chromium } from "playwright";
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const extensionDirectory = resolve(scriptDirectory, "..");
 const assetDirectory = join(extensionDirectory, "store-assets");
-const sessionKey = "whatIsThisGuideSessionV1:window:1";
+const sessionKey = "whatIsThisGuideSessionV2:tab:1";
+const verifyOnly = process.argv.includes("--verify-only");
 let captureDataUrl = "";
 
 const resultBase = {
@@ -52,18 +54,23 @@ const resultBase = {
 
 function sessionFor(state) {
   const base = {
-    version: 1,
+    version: 2,
     status: "idle",
     draft: null,
     intent: "identify",
     goal: "",
     clarificationAnswer: "",
     clarificationError: null,
+    followUpQuestion: "",
+    followUpError: null,
+    completedStepIds: [],
     result: null,
     responseWarnings: [],
     requestId: null,
     captureId: null,
     generationId: null,
+    generationMode: null,
+    panelRevision: 0,
     captureError: null,
     error: null,
     updatedAt: "2026-08-11T12:00:00.000Z",
@@ -116,12 +123,16 @@ function mockChromeScript(state) {
         runtime: {
           id: "store-artwork",
           onMessage: { addListener() {} },
-          sendMessage: async () => ({ ok: false, error: "Store artwork is read-only." }),
+          sendMessage: async (message) => message?.type === "GET_ACTIVE_TAB_CONTEXT"
+            ? ({ ok: true, context: { tabId: 1, windowId: 1, captureGranted: true } })
+            : ({ ok: false, error: "Store artwork is read-only." }),
         },
         windows: { getCurrent: async () => ({ id: 1 }) },
         storage: {
           session: {
-            get: async (keys) => Object.fromEntries((Array.isArray(keys) ? keys : [keys]).filter((key) => key in stored).map((key) => [key, stored[key]])),
+            get: async (keys) => keys === null
+              ? ({ ...stored })
+              : Object.fromEntries((Array.isArray(keys) ? keys : [keys]).filter((key) => key in stored).map((key) => [key, stored[key]])),
             set: async (values) => Object.assign(stored, values),
             remove: async (keys) => { for (const key of (Array.isArray(keys) ? keys : [keys])) delete stored[key]; },
           },
@@ -223,19 +234,44 @@ try {
   for (const [state, filename] of outputs) {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
     const page = await context.newPage();
+    const pageErrors = [];
+    page.on("pageerror", (error) => pageErrors.push(error));
     await page.goto(`${origin}/showcase.html?state=${state}`, { waitUntil: "networkidle" });
     const panelFrame = page.frames().find((frame) => frame.url().includes("/sidepanel.html"));
     if (!panelFrame) throw new Error(`The ${state} side panel did not load.`);
-    await panelFrame.locator("#browser-ai-status").filter({ hasText: "Ready" }).waitFor();
+    await panelFrame.locator("#readiness-heading").filter({ hasText: "ready" }).waitFor();
     if (state !== "capture") {
       await panelFrame.locator("#result-panel").waitFor({ state: "visible" });
       await panelFrame.locator("#result-panel").evaluate((element) => element.scrollIntoView({ block: "start" }));
     }
-    await page.screenshot({ path: join(assetDirectory, filename), type: "png" });
+    if (!verifyOnly) await page.screenshot({ path: join(assetDirectory, filename), type: "png" });
+
+    if (state === "capture") {
+      assert.equal(await panelFrame.locator("#request-panel").isHidden(), true);
+      assert.equal(await panelFrame.locator("#capture-content").isVisible(), true);
+    } else {
+      assert.equal(await panelFrame.locator("#capture-content").isHidden(), true);
+      assert.equal(await panelFrame.locator("#request-content").isHidden(), true);
+    }
+    if (state === "guide") {
+      await panelFrame.locator('#steps-list input[type="checkbox"]').first().click();
+      await panelFrame.locator("#step-progress").filter({ hasText: "1 of 2 completed" }).waitFor();
+      await panelFrame.locator(".follow-up-chip").first().click();
+      assert.match(await panelFrame.locator("#follow-up-input").inputValue(), /recommended next step/i);
+      await panelFrame.locator("#new-question-button").click();
+      assert.equal(await panelFrame.locator("#request-content").isVisible(), true);
+    }
+    if (state === "clarification") {
+      assert.equal(await panelFrame.locator("#recommendation-section").isHidden(), true);
+      assert.equal(await panelFrame.locator("#follow-up-section").isHidden(), true);
+    }
+    assert.deepEqual(pageErrors, []);
     await context.close();
   }
 
-  console.log(`Rendered ${outputs.length} Store screenshots in ${assetDirectory}.`);
+  console.log(verifyOnly
+    ? `Verified ${outputs.length} progressive side-panel states.`
+    : `Rendered and verified ${outputs.length} Store screenshots in ${assetDirectory}.`);
 } finally {
   await browser.close();
   server.close();

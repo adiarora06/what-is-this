@@ -16,7 +16,7 @@ const permissions = [
   },
   {
     name: "storage",
-    purpose: "Keeps the current capture, typed context, and guide in session storage for the current Chrome session.",
+    purpose: "Keeps recent tab captures, typed context, guide progress, and results in memory for the current Chrome session.",
   },
 ] as const;
 
@@ -32,13 +32,13 @@ export default function PrivacyPage() {
         <p className="privacyPolicyLead">
           What Is This? Guide helps you capture the visible part of a tab and create a contextual guide without sending that capture away from your device.
         </p>
-        <p className="privacyPolicyDate">Last updated August 11, 2026</p>
+        <p className="privacyPolicyDate">Last updated September 12, 2026</p>
       </header>
 
       <section className="privacyPolicyCard" aria-labelledby="scope-heading">
         <h2 id="scope-heading">What this policy covers</h2>
         <p>
-          This policy covers version 0.3.0 of the What Is This? Guide Chrome extension. Its single purpose is to turn a user-requested screenshot into a private, structured guide for identifying, explaining, troubleshooting, comparing, or completing a process.
+          This policy covers version 0.4.0 of the What Is This? Guide Chrome extension. Its single purpose is to turn a user-requested screenshot into a private, structured guide for identifying, explaining, troubleshooting, comparing, or completing a process.
         </p>
       </section>
 
@@ -47,8 +47,9 @@ export default function PrivacyPage() {
         <p>The extension handles only the information needed to create the guide:</p>
         <ul>
           <li>A screenshot of the visible area of the active tab, captured only after a user action.</li>
-          <li>Text you enter, such as a goal or clarification answer.</li>
-          <li>The resulting guide and its processing status.</li>
+          <li>Text you enter, such as a goal, clarification answer, or follow-up question.</li>
+          <li>The resulting guide, checked-off steps, and processing status.</li>
+          <li>Temporary Chrome tab and window identifiers used only to keep each tab&apos;s session separate.</li>
         </ul>
         <p>
           The extension does not separately access page URLs, page titles, selected text, DOM content, form fields, cookies, the password manager, authentication APIs, browsing history, or activity from tabs running in the background.
@@ -71,10 +72,10 @@ export default function PrivacyPage() {
       <section className="privacyPolicyCard" aria-labelledby="retention-heading">
         <h2 id="retention-heading">Storage, retention, and deletion</h2>
         <p>
-          The current screenshot, text, and guide are kept in <code>chrome.storage.session</code> for the applicable standard Chrome window. They are removed when you choose Start over, when that window closes, or when the Chrome browser session ends.
+          Screenshots, text, guides, and checked-off steps are kept in <code>chrome.storage.session</code> and separated by tab. The extension retains no more than three recently used tab sessions to stay within Chrome&apos;s memory budget. A tab&apos;s information is removed when you choose Start over or close that tab; all remaining session information is removed when the Chrome browser session ends.
         </p>
         <p>
-          Version 0.3.0 writes no captures, typed context, guides, or settings to local or synchronized storage. When updating from the earlier preview build, it deletes that build&apos;s obsolete local processing-mode preference. Reloading, updating, disabling, or removing the extension also clears its session storage.
+          Version 0.4.0 writes no captures, typed context, guides, progress, or settings to local or synchronized storage. When updating from the earlier preview build, it deletes that build&apos;s obsolete local processing-mode preference. Reloading, updating, disabling, or removing the extension also clears its session storage.
         </p>
       </section>
 
@@ -113,7 +114,7 @@ export default function PrivacyPage() {
       </section>
 
       <footer className="privacyPolicyFooter">
-        <p>What Is This? Guide · Chrome extension version 0.3.0</p>
+        <p>What Is This? Guide · Chrome extension version 0.4.0</p>
       </footer>
     </main>
   );

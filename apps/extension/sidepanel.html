@@ -13,106 +13,156 @@
           <span class="brand-mark" aria-hidden="true">?</span>
           <div>
             <p class="eyebrow">What Is This?</p>
-            <p class="brand-name">Tab guide</p>
+            <p class="brand-name">Guide this tab</p>
           </div>
         </div>
-        <span id="privacy-pill" class="privacy-pill">On-device AI</span>
+        <span id="privacy-pill" class="privacy-pill">On-device</span>
       </header>
 
       <main>
         <section class="intro" aria-labelledby="main-heading">
-          <p class="eyebrow">See it. Focus it. Understand it.</p>
-          <h1 id="main-heading">What do you need from this tab?</h1>
-          <p>Capture only the visible area, trim it to what matters, and receive a guide without sending the image to our servers.</p>
+          <p class="eyebrow">See it · focus it · move forward</p>
+          <h1 id="main-heading">What do you need from this page?</h1>
+          <p>Turn what is visible into a clear, private next step.</p>
         </section>
 
-        <section class="panel capture-panel" aria-labelledby="capture-heading">
+        <section id="readiness-panel" class="readiness-card" aria-labelledby="readiness-heading">
+          <span id="readiness-indicator" class="readiness-indicator" aria-hidden="true"></span>
+          <div>
+            <strong id="readiness-heading">Checking on-device AI…</strong>
+            <span id="browser-ai-status">Checking Chrome and this device.</span>
+            <progress id="model-download-progress" max="1" value="0" hidden>0%</progress>
+          </div>
+          <a id="web-app-link" href="https://what-is-this-mobile.vercel.app/" target="_blank" rel="noreferrer" hidden>Use web app</a>
+        </section>
+
+        <div id="tab-context-notice" class="tab-context-notice" role="status" aria-live="polite" hidden>
+          <strong>Switched tabs</strong>
+          <span>This tab has its own private guide. Click the extension icon before a new capture.</span>
+        </div>
+
+        <section id="capture-panel" class="panel stage-panel capture-panel" aria-labelledby="capture-heading">
           <div class="section-heading">
             <div>
               <p class="step-label">1 · Capture</p>
-              <h2 id="capture-heading">Visible tab</h2>
+              <h2 id="capture-heading">Visible area</h2>
             </div>
-            <button id="reset-button" class="text-button" type="button" disabled>Start over</button>
-          </div>
-
-          <div class="capture-disclosure" aria-labelledby="capture-disclosure-heading">
-            <strong id="capture-disclosure-heading">Before you capture</strong>
-            <p>When you press the button below, Chrome takes a screenshot of only the visible area of your active tab so its built-in AI can create your guide.</p>
-            <p>The screenshot includes everything currently visible. Do not capture passwords, security codes, financial or health records, or private messages.</p>
-            <p>The screenshot is processed on this device, kept only for the current Chrome session, and is not sent to us or any third party.</p>
-            <a href="https://what-is-this-mobile.vercel.app/privacy" target="_blank" rel="noreferrer">Read the privacy policy</a>
-          </div>
-
-          <div id="capture-empty" class="empty-state">
-            <div class="empty-visual" aria-hidden="true"><span></span></div>
-            <strong>Nothing captured yet</strong>
-            <p>Chrome shares one screenshot only after you invoke the extension on a tab.</p>
-          </div>
-
-          <div id="preview-region" class="preview-region" hidden>
-            <div class="preview-frame">
-              <canvas id="preview-canvas" role="img" aria-label="Preview of the visible tab. Drag to select an optional crop." aria-describedby="crop-help"></canvas>
-              <div id="preview-loading" class="preview-loading">Preparing preview…</div>
+            <div class="heading-actions">
+              <button id="capture-toggle-button" class="text-button" type="button" aria-expanded="true" hidden>Edit</button>
+              <button id="reset-button" class="text-button danger-text" type="button" disabled>Start over</button>
             </div>
-            <p id="crop-help" class="helper-text">Optional: drag across the preview, or use Select center crop with a keyboard.</p>
-            <div class="button-row compact">
-              <button id="center-crop-button" class="secondary-button" type="button">Select center crop</button>
-              <button id="apply-crop-button" class="secondary-button" type="button" disabled>Use crop</button>
-              <button id="restore-image-button" class="secondary-button" type="button" disabled>Restore full capture</button>
-            </div>
-            <div id="source-summary" class="source-summary"></div>
           </div>
 
-          <button id="capture-button" class="primary-button wide" type="button" disabled>Capture visible tab privately</button>
-          <p id="capture-status" class="status-line" role="status" aria-live="polite">Ready when the tab is.</p>
+          <div id="capture-summary" class="stage-summary" hidden>
+            <span class="summary-check" aria-hidden="true">✓</span>
+            <span>Visible screenshot ready for this tab</span>
+          </div>
+
+          <div id="capture-content" class="stage-content">
+            <div class="capture-disclosure" aria-labelledby="capture-disclosure-heading">
+              <strong id="capture-disclosure-heading">One visible screenshot, processed on this device</strong>
+              <p>Capture only after checking the page for passwords, codes, health or financial details, and private messages.</p>
+              <details>
+                <summary>Exactly what is and isn’t accessed</summary>
+                <p>Chrome captures only the visible pixels after you press Capture. The image stays in memory for this Chrome session and is not sent to us, the page, or another provider.</p>
+                <p>The extension does not read the page address, title, DOM, selection, cookies, form fields, or browsing history.</p>
+                <a href="https://what-is-this-mobile.vercel.app/privacy" target="_blank" rel="noreferrer">Privacy policy</a>
+              </details>
+            </div>
+
+            <div id="capture-empty" class="empty-state">
+              <div class="empty-visual" aria-hidden="true"><span></span></div>
+              <strong>Ready for a private capture</strong>
+              <p>Only the part of this tab you can currently see will be captured.</p>
+            </div>
+
+            <div id="preview-region" class="preview-region" hidden>
+              <div class="preview-frame">
+                <canvas id="preview-canvas" tabindex="0" role="img" aria-label="Preview of the visible tab with an optional crop selection." aria-describedby="crop-help"></canvas>
+                <div id="preview-loading" class="preview-loading">Preparing preview…</div>
+              </div>
+              <p id="crop-help" class="helper-text">Optional: choose a preset, drag on the preview, or use arrow keys to move a selection. Hold Shift with an arrow key to resize it.</p>
+              <fieldset class="crop-presets">
+                <legend>Crop preset</legend>
+                <div class="segmented-row">
+                  <button class="crop-preset-button" type="button" data-crop-preset="center">Center</button>
+                  <button class="crop-preset-button" type="button" data-crop-preset="top">Top</button>
+                  <button class="crop-preset-button" type="button" data-crop-preset="bottom">Bottom</button>
+                </div>
+              </fieldset>
+              <div class="button-row compact">
+                <button id="apply-crop-button" class="secondary-button" type="button" disabled>Use selected crop</button>
+                <button id="restore-image-button" class="secondary-button" type="button" disabled>Restore full image</button>
+              </div>
+              <div id="source-summary" class="source-summary"></div>
+            </div>
+
+            <div class="action-dock">
+              <button id="capture-button" class="primary-button wide" type="button" disabled>Capture visible tab privately</button>
+              <p id="capture-status" class="status-line" role="status" aria-live="polite">Ready when the tab is.</p>
+            </div>
+          </div>
         </section>
 
-        <section class="panel request-panel" aria-labelledby="request-heading">
+        <section id="request-panel" class="panel stage-panel request-panel" aria-labelledby="request-heading" hidden>
           <div class="section-heading">
             <div>
-              <p class="step-label">2 · Ask</p>
-              <h2 id="request-heading">Shape the answer</h2>
+              <p class="step-label">2 · Focus</p>
+              <h2 id="request-heading">Shape the guide</h2>
+            </div>
+            <button id="request-toggle-button" class="text-button" type="button" aria-expanded="true" hidden>Edit</button>
+          </div>
+
+          <div id="request-summary" class="stage-summary" hidden>
+            <span class="summary-check" aria-hidden="true">✓</span>
+            <span id="request-summary-text"></span>
+          </div>
+
+          <div id="request-content" class="stage-content">
+            <div class="quick-start" aria-labelledby="quick-start-heading">
+              <strong id="quick-start-heading">Try a quick question</strong>
+              <div class="chip-row">
+                <button class="prompt-chip" type="button" data-intent="explain" data-goal="Explain what this screen means.">Explain this screen</button>
+                <button class="prompt-chip" type="button" data-intent="troubleshoot" data-goal="Explain the visible error and the safest next step.">Explain this error</button>
+                <button class="prompt-chip" type="button" data-intent="guide" data-goal="Tell me what to click next to continue this process.">What should I click?</button>
+                <button class="prompt-chip" type="button" data-intent="explain" data-goal="Summarize the important information visible here.">Summarize this</button>
+              </div>
+            </div>
+
+            <label class="field">
+              <span>Type of help</span>
+              <select id="intent-select" disabled>
+                <option value="identify">Identify what this is</option>
+                <option value="explain">Explain what I’m seeing</option>
+                <option value="troubleshoot">Troubleshoot a problem</option>
+                <option value="compare">Compare with another option</option>
+                <option value="guide">Guide me step by step</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span id="goal-label">Optional clue</span>
+              <textarea id="goal-input" maxlength="500" placeholder="What should the answer focus on?" disabled></textarea>
+              <span class="field-footer"><small id="goal-help">A short clue can improve the result.</small><small id="goal-count">0/500</small></span>
+            </label>
+
+            <div class="data-boundary" id="data-boundary">
+              <strong>Private by design</strong>
+              <span>The screenshot and your text stay in this extension session and are processed by Chrome on this device.</span>
+            </div>
+
+            <div class="action-dock">
+              <button id="generate-button" class="scan-button wide" type="button" disabled>Create guide on this device</button>
+              <button id="cancel-generation-button" class="secondary-button wide cancel-button" type="button" hidden disabled>Cancel guide</button>
+              <div id="generation-progress" class="generation-progress" hidden aria-hidden="true"><span></span><span></span><span></span></div>
+              <p id="generate-status" class="status-line" role="status" aria-live="polite"></p>
             </div>
           </div>
-
-          <label class="field">
-            <span>What do you need?</span>
-            <select id="intent-select" disabled>
-              <option value="identify">Identify what this is</option>
-              <option value="explain">Explain what I’m seeing</option>
-              <option value="troubleshoot">Troubleshoot a problem</option>
-              <option value="compare">Compare with another option</option>
-              <option value="guide">Guide me step by step</option>
-            </select>
-          </label>
-
-          <label class="field">
-            <span id="goal-label">Optional clue</span>
-            <textarea id="goal-input" maxlength="500" placeholder="What should the answer focus on?" disabled></textarea>
-            <span class="field-footer"><small id="goal-help">A short clue can improve the result.</small><small id="goal-count">0/500</small></span>
-          </label>
-
-          <div class="model-card" aria-labelledby="model-heading">
-            <div>
-              <strong id="model-heading">Chrome on-device AI</strong>
-              <span id="browser-ai-status">Checking this device…</span>
-            </div>
-            <span class="model-badge">No cloud upload</span>
-          </div>
-
-          <div id="data-boundary" class="data-boundary">
-            <strong>Stays in this extension</strong>
-            <span>The screenshot is kept only for this Chrome session.</span>
-          </div>
-
-          <button id="generate-button" class="scan-button wide" type="button" disabled>Guide on this device</button>
-          <button id="cancel-generation-button" class="secondary-button wide cancel-button" type="button" hidden disabled>Cancel guide</button>
-          <p id="generate-status" class="status-line" role="status" aria-live="polite"></p>
         </section>
 
         <section id="result-panel" class="panel result-panel" aria-labelledby="result-heading" hidden>
           <div class="result-kicker">
-            <p class="step-label">3 · Review</p>
+            <p class="step-label">3 · Guide</p>
             <span id="confidence-badge" class="confidence-badge"></span>
           </div>
           <h2 id="result-heading" tabindex="-1"></h2>
@@ -130,16 +180,10 @@
             <form id="clarification-form" class="clarification-form">
               <label class="field" for="clarification-input">
                 <span>Your answer</span>
-                <textarea
-                  id="clarification-input"
-                  maxlength="500"
-                  required
-                  aria-describedby="clarification-text clarification-help clarification-count clarification-error"
-                  placeholder="Add the exact label, symptom, option, or outcome."
-                ></textarea>
+                <textarea id="clarification-input" maxlength="500" required aria-describedby="clarification-text clarification-help clarification-count clarification-error" placeholder="Add the exact label, symptom, option, or outcome."></textarea>
               </label>
               <span class="field-footer">
-                <small id="clarification-help">Your reply stays in the same processing mode as this guide.</small>
+                <small id="clarification-help">Your reply stays on this device.</small>
                 <small id="clarification-count">0/500</small>
               </span>
               <p id="clarification-error" class="inline-error" role="alert" hidden></p>
@@ -159,7 +203,13 @@
           </section>
 
           <section id="steps-section" class="result-section" aria-labelledby="steps-heading" hidden>
-            <h3 id="steps-heading">Steps</h3>
+            <div class="section-heading compact-heading">
+              <div>
+                <h3 id="steps-heading">Steps</h3>
+                <p id="step-progress" class="helper-text"></p>
+              </div>
+              <button id="reset-progress-button" class="text-button" type="button" hidden>Reset checks</button>
+            </div>
             <ol id="steps-list" class="steps-list"></ol>
           </section>
 
@@ -178,12 +228,44 @@
             <ul id="sources-list"></ul>
           </details>
 
+          <section id="follow-up-section" class="follow-up-card" aria-labelledby="follow-up-heading">
+            <h3 id="follow-up-heading">Keep asking about this capture</h3>
+            <div class="chip-row">
+              <button class="follow-up-chip" type="button" data-follow-up="Why is that the recommended next step?">Why this step?</button>
+              <button class="follow-up-chip" type="button" data-follow-up="What should I try if the recommended step does not work?">What if it fails?</button>
+              <button class="follow-up-chip" type="button" data-follow-up="Explain the steps in simpler language.">Make it simpler</button>
+            </div>
+            <form id="follow-up-form" class="follow-up-form">
+              <label class="field" for="follow-up-input">
+                <span>Follow-up question</span>
+                <textarea id="follow-up-input" maxlength="500" required aria-describedby="follow-up-help follow-up-count follow-up-error" placeholder="Ask why, what to try next, or about a specific step."></textarea>
+              </label>
+              <span class="field-footer">
+                <small id="follow-up-help">Uses the same screenshot and current guide.</small>
+                <small id="follow-up-count">0/500</small>
+              </span>
+              <p id="follow-up-error" class="inline-error" role="alert" hidden></p>
+              <button id="follow-up-submit" class="primary-button wide" type="submit" disabled>Update guide</button>
+            </form>
+          </section>
+
           <p id="processing-line" class="processing-line"></p>
+
+          <div class="result-action-dock" aria-label="Guide actions">
+            <button id="copy-guide-button" class="secondary-button" type="button">Copy guide</button>
+            <button id="retry-guide-button" class="secondary-button" type="button">Retry</button>
+            <button id="recapture-button" class="secondary-button" type="button">Recapture</button>
+            <button id="new-question-button" class="primary-button" type="button">New question</button>
+          </div>
+          <p id="result-action-status" class="status-line" role="status" aria-live="polite"></p>
         </section>
       </main>
 
       <footer>
-        Screenshots are session-only and processed by Chrome on this device. <a href="https://what-is-this-mobile.vercel.app/privacy" target="_blank" rel="noreferrer">Privacy policy</a>
+        <span>Private, session-only, and processed by Chrome on this device.</span>
+        <a href="https://what-is-this-mobile.vercel.app/privacy" target="_blank" rel="noreferrer">Privacy</a>
+        <span aria-hidden="true">·</span>
+        <span>Shortcut: <kbd>Ctrl/⌘ Shift Y</kbd></span>
       </footer>
     </div>
 

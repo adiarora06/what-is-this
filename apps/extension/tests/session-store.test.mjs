@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   DeferredSessionSaveQueue,
+  LEGACY_SESSION_KEY,
   SESSION_KEY,
   beginCaptureSession,
   captureFailureSession,
@@ -9,9 +10,10 @@ import {
   isCurrentGeneration,
   loadSession,
   normalizeSession,
+  pruneTabSessions,
   recoverInterruptedGeneration,
   saveSession,
-  sessionKeyForWindow,
+  sessionKeyForTab,
 } from "../session-store.js";
 
 test("deferred session saves are cancelled or ordered before a capture boundary", async () => {
@@ -67,21 +69,41 @@ test("deferred session saves are cancelled or ordered before a capture boundary"
   assert.deepEqual(writes, ["latest-before-capture", "first", "second"], "capture starts only after every started save settles");
 });
 
-test("clarification answers are session-only, bounded, and cleared by a fresh session", () => {
+test("typed follow-ups and completion state are session-only, bounded, and normalized", () => {
   const normalized = normalizeSession({
     clarificationAnswer: "a".repeat(700),
     clarificationError: "e".repeat(700),
+    followUpQuestion: "q".repeat(700),
+    followUpError: "f".repeat(700),
+    completedStepIds: ["step-1", "step-1", "bad id", "step_2", 3],
     panelRevision: 7,
   });
   assert.equal(normalized.clarificationAnswer.length, 500);
   assert.equal(normalized.clarificationError.length, 500);
+  assert.equal(normalized.followUpQuestion.length, 500);
+  assert.equal(normalized.followUpError.length, 500);
+  assert.deepEqual(normalized.completedStepIds, ["step-1", "step_2"]);
   assert.equal(normalized.panelRevision, 7);
   assert.equal(emptySession().clarificationAnswer, "");
   assert.equal(emptySession().clarificationError, null);
+  assert.equal(emptySession().followUpQuestion, "");
+  assert.equal(emptySession().followUpError, null);
+  assert.deepEqual(emptySession().completedStepIds, []);
   assert.equal(normalizeSession({ clarificationAnswer: 123 }).clarificationAnswer, "");
   assert.equal(normalizeSession({ clarificationError: 123 }).clarificationError, null);
   assert.equal(normalizeSession({ panelRevision: -1 }).panelRevision, 0);
   assert.equal(normalizeSession({ panelRevision: "7" }).panelRevision, 0);
+  const privateFields = normalizeSession({
+    unexpected: "discard me",
+    draft: {
+      id: "draft-safe",
+      source: { kind: "visible-tab", url: "https://example.com/private" },
+      image: { dataUrl: "https://example.com/image.jpg" },
+    },
+  });
+  assert.equal("unexpected" in privateFields, false);
+  assert.deepEqual(privateFields.draft.source, { kind: "visible-tab" });
+  assert.equal(privateFields.draft.image, null);
 });
 
 function usableSession(overrides = {}) {
@@ -161,6 +183,7 @@ test("an interrupted clarification update retains the question, answer, and prio
   const recovered = recoverInterruptedGeneration(usableSession({
     status: "generating",
     generationId: "clarification-generation",
+    generationMode: "clarification",
     clarificationAnswer: "Model A-100",
     result,
     responseWarnings: ["Keep the device disconnected."],
@@ -173,16 +196,35 @@ test("an interrupted clarification update retains the question, answer, and prio
   assert.equal(recovered.clarificationAnswer, "Model A-100");
   assert.deepEqual(recovered.responseWarnings, ["Keep the device disconnected."]);
   assert.equal(recovered.requestId, "request-clarification");
-  assert.match(recovered.error, /answer was kept/i);
+  assert.match(recovered.error, /text was kept/i);
 });
 
-test("session storage is isolated per Chrome window and ignores the legacy global record", async (context) => {
+test("an interrupted follow-up retains the prior guide and typed question", () => {
+  const result = { subject: "Existing result" };
+  const recovered = recoverInterruptedGeneration(usableSession({
+    status: "generating",
+    generationId: "follow-up-generation",
+    generationMode: "follow-up",
+    followUpQuestion: "What if this fails?",
+    result,
+  }));
+  assert.equal(recovered.status, "error");
+  assert.deepEqual(recovered.result, result);
+  assert.equal(recovered.followUpQuestion, "What if this fails?");
+  assert.match(recovered.error, /follow-up/i);
+});
+
+test("session storage is isolated per Chrome tab and ignores legacy global records", async (context) => {
   const previousChrome = globalThis.chrome;
-  const records = { [SESSION_KEY]: usableSession({ goal: "Legacy private capture" }) };
+  const records = {
+    [SESSION_KEY]: usableSession({ goal: "Legacy v2 global capture" }),
+    [LEGACY_SESSION_KEY]: usableSession({ goal: "Legacy v1 private capture" }),
+  };
   globalThis.chrome = {
     storage: {
       session: {
         async get(keys) {
+          if (keys === null) return { ...records };
           const result = {};
           for (const key of Array.isArray(keys) ? keys : [keys]) {
             if (Object.hasOwn(records, key)) result[key] = records[key];
@@ -206,11 +248,19 @@ test("session storage is isolated per Chrome window and ignores the legacy globa
   const legacyIgnored = await loadSession(11);
   assert.equal(legacyIgnored.status, "idle");
   assert.equal(SESSION_KEY in records, false);
+  assert.equal(LEGACY_SESSION_KEY in records, false);
 
-  await saveSession(usableSession({ goal: "Window eleven" }), 11);
-  await saveSession(usableSession({ goal: "Window twelve" }), 12);
-  assert.equal((await loadSession(11)).goal, "Window eleven");
-  assert.equal((await loadSession(12)).goal, "Window twelve");
-  assert.notEqual(sessionKeyForWindow(11), sessionKeyForWindow(12));
-  assert.throws(() => sessionKeyForWindow(undefined), /window id/i);
+  await saveSession(usableSession({ goal: "Tab eleven" }), 11);
+  await saveSession(usableSession({ goal: "Tab twelve" }), 12);
+  assert.equal((await loadSession(11)).goal, "Tab eleven");
+  assert.equal((await loadSession(12)).goal, "Tab twelve");
+  assert.notEqual(sessionKeyForTab(11), sessionKeyForTab(12));
+  assert.throws(() => sessionKeyForTab(undefined), /tab id/i);
+
+  await saveSession(usableSession({ goal: "Tab thirteen", updatedAt: "2026-01-03T00:00:00.000Z" }), 13);
+  await saveSession(usableSession({ goal: "Tab fourteen", updatedAt: "2026-01-04T00:00:00.000Z" }), 14);
+  const removed = await pruneTabSessions(11, 3);
+  assert.equal(removed.length, 1);
+  assert.equal(sessionKeyForTab(11) in records, true, "the active tab is always retained");
+  assert.equal(Object.keys(records).filter((key) => key.startsWith(`${SESSION_KEY}:tab:`)).length, 3);
 });

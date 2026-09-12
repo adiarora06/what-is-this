@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const EXPECTED_VERSION = "0.3.0";
+const EXPECTED_VERSION = "0.4.0";
 const EXPECTED_PERMISSIONS = ["activeTab", "sidePanel", "storage"];
 const MAX_PACKAGE_BYTES = 2 * 1024 * 1024 * 1024;
 const NORMALIZED_TIMESTAMP = new Date("2020-01-01T00:00:00.000Z");
@@ -34,7 +34,7 @@ const PACKAGE_FILES = [
   "sidepanel.css",
   "sidepanel.html",
   "sidepanel.js",
-  "window-operation-registry.js",
+  "operation-registry.js",
 ].sort();
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));

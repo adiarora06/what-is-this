@@ -1,8 +1,8 @@
-# Chrome Web Store submission — What Is This? Guide v0.3.0
+# Chrome Web Store submission — What Is This? Guide v0.4.0
 
-This file is the copy-and-paste source of truth for the first Chrome Web Store submission. Generate the upload artifact with `npm --prefix apps/extension run package:store`, then upload `apps/extension/dist/what-is-this-guide-v0.3.0.zip`.
+This file is the copy-and-paste source of truth for the next Chrome Web Store submission. Generate the upload artifact with `npm --prefix apps/extension run package:store`, then upload `apps/extension/dist/what-is-this-guide-v0.4.0.zip`.
 
-The packaging command accepts only Manifest V3 version 0.3.0 with the `activeTab`, `sidePanel`, and `storage` permissions. It packages an explicit runtime allowlist with `manifest.json` at the ZIP root; documentation, tests, store artwork, and development files are excluded.
+The packaging command accepts only Manifest V3 version 0.4.0 with the `activeTab`, `sidePanel`, and `storage` permissions. It packages an explicit runtime allowlist with `manifest.json` at the ZIP root; documentation, tests, store artwork, and development files are excluded.
 
 ## Public store listing
 
@@ -28,7 +28,9 @@ The packaging command accepts only Manifest V3 version 0.3.0 with the `activeTab
 >
 > What Is This? Guide captures only the visible area of the active tab after you choose “Capture visible tab privately.” Chrome’s built-in on-device AI analyzes that temporary image and returns a structured guide in Chrome’s side panel.
 >
-> Choose whether you want to identify, explain, troubleshoot, compare, or follow a step-by-step process. Add an optional goal, crop the capture to what matters, and answer one clarification question when the guide needs more context.
+> Move through three focused stages: Capture, Focus, and Guide. Choose a quick question or write your own, crop with pointer or keyboard controls, and answer a clarification when the guide needs more context.
+>
+> Results stay useful beside the page: check off steps, copy or retry the guide, recapture the page, ask a new question, or ask a follow-up using the same screenshot. Each tab keeps its own temporary guide, and Ctrl/Command+Shift+Y opens the panel quickly.
 >
 > Privacy by design:
 > • Processing happens on your device with Chrome’s built-in AI.
@@ -48,6 +50,10 @@ The packaging command accepts only Manifest V3 version 0.3.0 with the `activeTab
 
 > No
 
+## Version 0.4.0 release notes
+
+> A clearer three-stage Capture → Focus → Guide flow; model readiness before capture; quick question shortcuts; copy, retry, recapture, and new-question controls; follow-up questions using the same capture; per-tab private sessions; keyboard-accessible crop presets; step completion tracking; clearer progress; larger supporting text; and Ctrl/Command+Shift+Y to open the panel. Permissions and on-device data handling are unchanged.
+
 ## URLs
 
 Verify that each URL is public before submission.
@@ -63,7 +69,7 @@ Verify that each URL is public before submission.
 
 The following disclosure must be visible before the capture action:
 
-> Before you capture: When you press “Capture visible tab privately,” Chrome takes a screenshot of only the visible area of your active tab so its built-in AI can create your guide. The screenshot includes everything currently visible, so do not capture passwords, security codes, financial or health records, or private messages. It is processed on this device, kept only for the current Chrome session, and is not sent to us or any third party.
+> One visible screenshot, processed on this device: When you press “Capture visible tab privately,” Chrome takes a screenshot of only the visible area of your active tab. It can include everything currently visible, so do not capture passwords, codes, financial or health records, or private messages. It is kept only for the current Chrome session and is not sent to us, the page, or another provider.
 
 ### Permission justifications
 
@@ -77,7 +83,7 @@ The following disclosure must be visible before the capture action:
 
 **`storage`**
 
-> Uses `chrome.storage.session` to share the current screenshot, selected intent, typed goal or clarification, and generated guide between extension contexts during the current Chrome session. Version 0.3.0 writes no guide data or settings to local or sync storage; during an update it removes one obsolete local processing-mode preference from the preview build.
+> Uses `chrome.storage.session` to share up to three recent tab captures, selected intent, typed goal, clarification or follow-up, checked steps, and generated guide between extension contexts during the current Chrome session. Version 0.4.0 writes no guide data or settings to local or sync storage; during an update it removes one obsolete local processing-mode preference from the preview build.
 
 There are no host permissions, optional permissions, or `tabs`, `scripting`, or `contextMenus` permissions in this release.
 
@@ -94,7 +100,7 @@ All extension logic is packaged in the ZIP. Chrome supplies and manages its buil
 Use the exact data-type names shown in the current dashboard at submission time. At minimum, select:
 
 - **Website content:** the user-initiated screenshot of the visible tab.
-- **User-provided or user-generated content**, if the current form offers it: the optional goal or clarification text the user deliberately supplies for that guide.
+- **User-provided or user-generated content**, if the current form offers it: the goal, clarification, or follow-up text the user deliberately supplies for that guide.
 
 A capture can contain any information visible on screen, including personal identifiers, messages, authentication codes, financial details, form data, or health information. If the current form asks whether the handled website content can include those semantic categories, select every applicable category and explain that the content is user-selected, processed only on-device, retained only for the Chrome session, and never transmitted. Do not select web history, location, or background user activity: the extension does not read URLs, titles, DOM, cookies, history, analytics events, or activity outside the explicit screenshot.
 
@@ -121,21 +127,16 @@ No account, payment, credentials, special website, or external service is requir
 
 **Test steps**
 
-1. Open a normal webpage with a clearly visible object or interface.
-2. Select the extension’s toolbar icon. Confirm that the side panel opens and shows the capture disclosure before any screenshot exists.
-3. Choose **Capture visible tab privately**. Confirm that a preview of only the visible viewport appears.
-4. Optionally apply a crop, select an intent, and enter a short goal.
-5. Confirm that **Chrome on-device AI** is available, then choose **Guide on this device**. While Chrome downloads or runs the model, confirm that **Cancel guide** remains available; cancelling restores the guide controls, and an unattended request times out after three minutes.
-6. Confirm that the result contains a subject, summary, recommended action, and—when applicable—evidence, steps, completion checks, warnings, or one clarification question.
-7. If a clarification question appears, enter an answer and choose **Update guide**. Confirm that the existing capture is reused without another screenshot.
-8. Choose **Start over** and confirm that the capture and guide are cleared.
+Paste this reviewer instruction block; its body is under the dashboard's 500-character limit:
+
+> Open a webpage and click the extension icon. Confirm the disclosure appears before capture. Click “Capture visible tab privately,” optionally crop, choose a quick question, then click “Create guide on this device.” Confirm a guide appears. Check a step, copy the guide, and ask a follow-up; the same screenshot should be reused. Switch tabs and confirm the panel shows that each tab has a separate guide. Click Start over to clear it. No account or external guide service is needed.
 
 If `LanguageModel.availability()` reports that the model is unavailable, use a device that meets the environment requirements above. The extension should explain this compatibility state rather than upload the screenshot or silently switch to a remote model.
 
 ## Distribution sequence
 
 1. Register the publisher, verify its contact email, enable 2-Step Verification, and complete the Trader or Non-Trader declaration.
-2. Submit v0.3.0 as **Private — Only trusted testers** first. Add tester Google Accounts in the publisher settings.
+2. After the submitted v0.3.0 review finishes (or is withdrawn), upload v0.4.0 as the next package. Use **Private — Only trusted testers** until the updated workflow has been verified from the Store build.
 3. Install the reviewed private build from the Chrome Web Store and complete the test instructions on at least one supported Windows or macOS device.
 4. Resolve any review or tester findings, increment the version for any changed package, and regenerate the ZIP.
 5. Change distribution to **Public**, choose all intended regions, enable deferred publishing, and submit for public review.
@@ -154,14 +155,14 @@ Prepare these exact files outside the extension ZIP:
 - `apps/extension/store-assets/small-promo-440x280.png` — required PNG or JPEG small promotional tile.
 - `apps/extension/store-assets/marquee-promo-1400x560.png` — optional PNG or JPEG marquee tile.
 
-Use only real extension UI in screenshots. Keep screenshot corners square with no added padding, avoid dense text in promotional artwork, and verify that every visible statement matches v0.3.0 behavior.
+Use only real extension UI in screenshots. Keep screenshot corners square with no added padding, avoid dense text in promotional artwork, and verify that every visible statement matches v0.4.0 behavior.
 
 ## Final submission check
 
 - [ ] `npm --prefix apps/extension run verify` passes.
 - [ ] Store asset validation reports all five required images and the 16 px icon safe area.
 - [ ] `npm --prefix apps/extension run package:store` succeeds and reports exactly 14 files.
-- [ ] The ZIP filename and manifest version are both v0.3.0.
+- [ ] The ZIP filename and manifest version are both v0.4.0.
 - [ ] All three declared permissions match the justifications above.
 - [ ] The production privacy policy and support URL are public.
 - [ ] The dashboard data types and certifications match the extension behavior.

@@ -52,11 +52,14 @@ jobs:
   chrome-extension:
     name: Chrome extension
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
       - run: npm --prefix apps/extension run verify
       - run: npm --prefix apps/extension run package:store
