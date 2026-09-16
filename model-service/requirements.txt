@@ -3,5 +3,5 @@ uvicorn[standard]>=0.52.4,<1
 pillow>=12.3,<13
 python-multipart>=0.0.32
 numpy>=2.5.2,<3
-onnxruntime>=1.29.0,<2
+onnxruntime>=1.30.0,<2
 requests>=2.34.2,<3
