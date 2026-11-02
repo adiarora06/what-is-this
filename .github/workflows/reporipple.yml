@@ -1,0 +1,43 @@
+name: RepoRipple impact
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reporipple-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  impact:
+    name: Analyze change impact
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Generate RepoRipple reports
+        id: reporipple
+        uses: adiarora06/RepoRipple@9feab0ac7fb52de3af47d4feb8e4357a4e506f83 # v0.5.0 + JS-only cache fix
+        with:
+          base: ${{ github.event.pull_request.base.sha || format('origin/{0}', github.event.repository.default_branch) }}
+          reports-directory: reporipple-reports
+
+      - name: Upload impact reports
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reporipple-impact-${{ github.event.pull_request.number || 'manual' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.reporipple.outputs.markdown-report }}
+            ${{ steps.reporipple.outputs.json-report }}
+          if-no-files-found: error
+          retention-days: 14
