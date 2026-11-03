@@ -27,7 +27,7 @@ jobs:
 
       - name: Generate RepoRipple reports
         id: reporipple
-        uses: adiarora06/RepoRipple@9feab0ac7fb52de3af47d4feb8e4357a4e506f83 # v0.5.0 + JS-only cache fix
+        uses: adiarora06/RepoRipple@1d4f761f6ba3c55f4fd0dc04e0147e0ce737b52c # v0.5.1 release source
         with:
           base: ${{ github.event.pull_request.base.sha || format('origin/{0}', github.event.repository.default_branch) }}
           reports-directory: reporipple-reports
