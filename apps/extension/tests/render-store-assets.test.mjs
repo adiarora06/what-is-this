@@ -14,7 +14,8 @@ test("showcase markup selects only fixed side-panel paths", () => {
   const page = showcasePage(payload);
 
   assert.match(page, /src="\/sidepanel-capture\.html"/);
-  assert.doesNotMatch(page, /globalThis\.injected|<script>/);
+  assert.equal(page.includes(payload), false);
+  assert.equal(page.includes("globalThis.injected"), false);
 });
 
 test("renderer never reflects request query values into HTML", async (context) => {
@@ -30,11 +31,14 @@ test("renderer never reflects request query values into HTML", async (context) =
 
   assert.equal(response.status, 200);
   assert.match(body, /src="\/sidepanel-guide\.html"/);
-  assert.doesNotMatch(body, /onerror|globalThis\.injected/);
+  assert.equal(body.includes(payload), false);
+  assert.equal(body.includes("globalThis.injected"), false);
 
   const missing = await fetch(
     `${origin}/showcase.html?state=${encodeURIComponent(payload)}`,
   );
   assert.equal(missing.status, 404);
-  assert.doesNotMatch(await missing.text(), /onerror|globalThis\.injected/);
+  const missingBody = await missing.text();
+  assert.equal(missingBody.includes(payload), false);
+  assert.equal(missingBody.includes("globalThis.injected"), false);
 });
