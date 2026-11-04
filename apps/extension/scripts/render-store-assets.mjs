@@ -11,6 +11,10 @@ const extensionDirectory = resolve(scriptDirectory, "..");
 const assetDirectory = join(extensionDirectory, "store-assets");
 const sessionKey = "whatIsThisGuideSessionV1:window:1";
 let captureDataUrl = "";
+const showcaseStates = ["capture", "guide", "clarification"];
+const sidePanelPathByState = new Map(
+  showcaseStates.map((state) => [state, `/sidepanel-${state}.html`]),
+);
 
 const resultBase = {
   subject: "A snake plant care page",
@@ -154,7 +158,8 @@ function examplePage() {
   </main></body></html>`;
 }
 
-function showcasePage(state) {
+export function showcasePage(state) {
+  const sidePanelPath = sidePanelPathByState.get(state) || sidePanelPathByState.get("capture");
   return `<!doctype html>
   <html lang="en"><head><meta charset="utf-8"><style>
     *{box-sizing:border-box}html,body{height:100%;margin:0;overflow:hidden;font-family:Inter,ui-sans-serif,system-ui,sans-serif}
@@ -162,81 +167,108 @@ function showcasePage(state) {
     .toolbar{align-items:center;background:#fff;border-bottom:1px solid #d8dad1;display:grid;grid-template-columns:110px 1fr 190px;gap:16px;padding:0 20px}
     .dots{display:flex;gap:8px}.dots i{background:#d9dbd2;border-radius:50%;height:11px;width:11px}.address{background:#f2f3ee;border-radius:999px;color:#666b60;font-size:12px;padding:10px 18px}.extension-name{color:#176c5f;font-size:12px;font-weight:800;text-align:right}
     .content{display:grid;grid-template-columns:minmax(0,1fr) 430px;min-height:0}.page{border:0;height:100%;width:100%}.panel{background:#f5f5ef;border:0;border-left:1px solid #d8dad1;height:100%;width:100%}
-  </style></head><body><div class="browser"><header class="toolbar"><span class="dots"><i></i><i></i><i></i></span><div class="address">example.local/plant-care</div><div class="extension-name">What Is This? Guide</div></header><div class="content"><iframe class="page" title="Example plant care page" src="/example.html"></iframe><iframe class="panel" title="What Is This? Guide side panel" src="/sidepanel.html?state=${state}"></iframe></div></div></body></html>`;
+  </style></head><body><div class="browser"><header class="toolbar"><span class="dots"><i></i><i></i><i></i></span><div class="address">example.local/plant-care</div><div class="extension-name">What Is This? Guide</div></header><div class="content"><iframe class="page" title="Example plant care page" src="/example.html"></iframe><iframe class="panel" title="What Is This? Guide side panel" src="${sidePanelPath}"></iframe></div></div></body></html>`;
 }
 
 const mimeTypes = { ".css": "text/css", ".html": "text/html", ".js": "text/javascript", ".png": "image/png" };
+const showcasePageByPath = new Map(
+  showcaseStates.map((state) => [`/showcase-${state}.html`, showcasePage(state)]),
+);
+const sidePanelStateByPath = new Map([
+  ["/", "capture"],
+  ["/sidepanel.html", "capture"],
+  ...showcaseStates.map((state) => [`/sidepanel-${state}.html`, state]),
+]);
 
-const server = createServer(async (request, response) => {
-  try {
-    const url = new URL(request.url || "/", "http://127.0.0.1");
-    if (url.pathname === "/example.html") {
-      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-      response.end(examplePage());
-      return;
+export function createStoreAssetServer() {
+  return createServer(async (request, response) => {
+    try {
+      const url = new URL(request.url || "/", "http://127.0.0.1");
+      if (url.pathname === "/example.html") {
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        response.end(examplePage());
+        return;
+      }
+
+      const showcaseBody = showcasePageByPath.get(url.pathname);
+      if (showcaseBody) {
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        response.end(showcaseBody);
+        return;
+      }
+
+      const sidePanelState = sidePanelStateByPath.get(url.pathname);
+      if (sidePanelState) {
+        const template = await readFile(join(extensionDirectory, "sidepanel.html"), "utf8");
+        const body = template.replace(
+          '<script type="module" src="sidepanel.js"></script>',
+          `${mockChromeScript(sidePanelState)}\n    <script type="module" src="sidepanel.js"></script>`,
+        );
+        response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        response.end(body);
+        return;
+      }
+
+      const relativePath = url.pathname.replace(/^\/+/, "");
+      const allowed = new Set(["sidepanel.css", "sidepanel.js", "session-store.js", "guide-adapter.js", "extension-policy.js"]);
+      if (!allowed.has(relativePath)) {
+        response.writeHead(404).end("Not found");
+        return;
+      }
+      const body = await readFile(join(extensionDirectory, relativePath));
+      response.writeHead(200, { "Content-Type": `${mimeTypes[extname(relativePath)] || "application/octet-stream"}; charset=utf-8`, "Cache-Control": "no-store" });
+      response.end(body);
+    } catch (error) {
+      console.error("Store artwork renderer request failed.", error);
+      response.writeHead(500).end("Server error");
     }
-    if (url.pathname === "/showcase.html") {
-      const state = ["capture", "guide", "clarification"].includes(url.searchParams.get("state")) ? url.searchParams.get("state") : "capture";
-      response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-      response.end(showcasePage(state));
-      return;
-    }
-
-    const relativePath = url.pathname.replace(/^\/+/, "") || "sidepanel.html";
-    const allowed = new Set(["sidepanel.html", "sidepanel.css", "sidepanel.js", "session-store.js", "guide-adapter.js", "extension-policy.js"]);
-    if (!allowed.has(relativePath)) {
-      response.writeHead(404).end("Not found");
-      return;
-    }
-    let body = await readFile(join(extensionDirectory, relativePath));
-    if (relativePath === "sidepanel.html") {
-      const state = ["capture", "guide", "clarification"].includes(url.searchParams.get("state")) ? url.searchParams.get("state") : "capture";
-      body = Buffer.from(body.toString("utf8").replace('<script type="module" src="sidepanel.js"></script>', `${mockChromeScript(state)}\n    <script type="module" src="sidepanel.js"></script>`));
-    }
-    response.writeHead(200, { "Content-Type": `${mimeTypes[extname(relativePath)] || "application/octet-stream"}; charset=utf-8`, "Cache-Control": "no-store" });
-    response.end(body);
-  } catch (error) {
-    response.writeHead(500).end(error instanceof Error ? error.message : "Server error");
-  }
-});
-
-await new Promise((resolveReady) => server.listen(0, "127.0.0.1", resolveReady));
-const address = server.address();
-if (!address || typeof address === "string") throw new Error("Could not start the local Store artwork renderer.");
-const origin = `http://127.0.0.1:${address.port}`;
-const browser = await chromium.launch({ headless: true });
-
-try {
-  const captureContext = await browser.newContext({ viewport: { width: 860, height: 744 }, deviceScaleFactor: 1 });
-  const capturePage = await captureContext.newPage();
-  await capturePage.goto(`${origin}/example.html`, { waitUntil: "networkidle" });
-  const captureBytes = await capturePage.screenshot({ type: "jpeg", quality: 82 });
-  captureDataUrl = `data:image/jpeg;base64,${captureBytes.toString("base64")}`;
-  await captureContext.close();
-
-  const outputs = [
-    ["capture", "screenshot-01-capture-1280x800.png"],
-    ["guide", "screenshot-02-guide-1280x800.png"],
-    ["clarification", "screenshot-03-clarification-1280x800.png"],
-  ];
-
-  for (const [state, filename] of outputs) {
-    const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
-    const page = await context.newPage();
-    await page.goto(`${origin}/showcase.html?state=${state}`, { waitUntil: "networkidle" });
-    const panelFrame = page.frames().find((frame) => frame.url().includes("/sidepanel.html"));
-    if (!panelFrame) throw new Error(`The ${state} side panel did not load.`);
-    await panelFrame.locator("#browser-ai-status").filter({ hasText: "Ready" }).waitFor();
-    if (state !== "capture") {
-      await panelFrame.locator("#result-panel").waitFor({ state: "visible" });
-      await panelFrame.locator("#result-panel").evaluate((element) => element.scrollIntoView({ block: "start" }));
-    }
-    await page.screenshot({ path: join(assetDirectory, filename), type: "png" });
-    await context.close();
-  }
-
-  console.log(`Rendered ${outputs.length} Store screenshots in ${assetDirectory}.`);
-} finally {
-  await browser.close();
-  server.close();
+  });
 }
+
+export async function renderStoreAssets() {
+  const server = createStoreAssetServer();
+  let browser;
+  try {
+    await new Promise((resolveReady) => server.listen(0, "127.0.0.1", resolveReady));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Could not start the local Store artwork renderer.");
+    const origin = `http://127.0.0.1:${address.port}`;
+    browser = await chromium.launch({ headless: true });
+
+    const captureContext = await browser.newContext({ viewport: { width: 860, height: 744 }, deviceScaleFactor: 1 });
+    const capturePage = await captureContext.newPage();
+    await capturePage.goto(`${origin}/example.html`, { waitUntil: "networkidle" });
+    const captureBytes = await capturePage.screenshot({ type: "jpeg", quality: 82 });
+    captureDataUrl = `data:image/jpeg;base64,${captureBytes.toString("base64")}`;
+    await captureContext.close();
+
+    const outputs = [
+      ["capture", "screenshot-01-capture-1280x800.png"],
+      ["guide", "screenshot-02-guide-1280x800.png"],
+      ["clarification", "screenshot-03-clarification-1280x800.png"],
+    ];
+
+    for (const [state, filename] of outputs) {
+      const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+      const page = await context.newPage();
+      await page.goto(`${origin}/showcase-${state}.html`, { waitUntil: "networkidle" });
+      const panelFrame = page.frames().find((frame) => frame.url().includes(`/sidepanel-${state}.html`));
+      if (!panelFrame) throw new Error(`The ${state} side panel did not load.`);
+      await panelFrame.locator("#browser-ai-status").filter({ hasText: "Ready" }).waitFor();
+      if (state !== "capture") {
+        await panelFrame.locator("#result-panel").waitFor({ state: "visible" });
+        await panelFrame.locator("#result-panel").evaluate((element) => element.scrollIntoView({ block: "start" }));
+      }
+      await page.screenshot({ path: join(assetDirectory, filename), type: "png" });
+      await context.close();
+    }
+
+    console.log(`Rendered ${outputs.length} Store screenshots in ${assetDirectory}.`);
+  } finally {
+    await browser?.close();
+    await new Promise((resolveClosed) => server.close(resolveClosed));
+  }
+}
+
+const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
+if (invokedPath === fileURLToPath(import.meta.url)) await renderStoreAssets();
