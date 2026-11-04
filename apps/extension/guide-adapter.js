@@ -189,6 +189,11 @@ const SAFE_NEGATED_MEDICATION_ACTION_PATTERN = /\b(?:do not|don['’]t|never|avo
 const DIRECT_MEDICATION_ACTION_PATTERN = /\b(?:tak(?:e|ing)|swallow(?:ing)?|chew(?:ing)?|dissolv(?:e|ing)|administer(?:ing)?|inject(?:ing)?|consum(?:e|ing)|giv(?:e|ing)|apply(?:ing)?|us(?:e|ing)|start(?:ing)?|stop(?:ping)?|skip(?:ping)?|increase|decrease|double|halve|adjust|change|taper|resume)\b/i;
 const MEDICATION_QUANTITY_OR_SCHEDULE_PATTERN = /\b(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|once|twice|daily|weekly|hourly|today|tonight|now|every\s+\d+(?:\.\d+)?\s*(?:hours?|hrs?|minutes?|mins?)|per\s+day|at\s+bedtime|with\s+meals?)\b/i;
 const MEDICATION_REFERENCE_PATTERN = /\b(?:medicine|medication|drug|prescription|dose|acetaminophen|paracetamol|ibuprofen|naproxen|aspirin|diphenhydramine|benadryl|amoxicillin|metformin|insulin|warfarin|epinephrine|naloxone|opioid|antibiotic|antihistamine|anticoagulant|pill|capsule|caplet|lozenge|suppository|inhaler|injection)s?\b/i;
+const SAFE_NEGATION_PATTERNS = [
+  SAFE_NEGATED_DESTRUCTIVE_COMMAND_PATTERN,
+  SAFE_NEGATED_DOSAGE_PATTERN,
+  SAFE_NEGATED_ACTION_PATTERN,
+];
 
 export class GuideAdapterError extends Error {
   constructor(message, code = "GUIDE_ADAPTER_ERROR") {
@@ -210,6 +215,25 @@ function isMeaningfulSafeguard(value) {
 
 function compactText(value, maxLength) {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, maxLength) : "";
+}
+
+function maskPatternMatches(value, pattern) {
+  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+  const matcher = new RegExp(pattern.source, flags);
+  const chunks = [];
+  let cursor = 0;
+
+  for (const match of value.matchAll(matcher)) {
+    const index = match.index ?? cursor;
+    chunks.push(value.slice(cursor, index), " ".repeat(match[0].length));
+    cursor = index + match[0].length;
+  }
+  chunks.push(value.slice(cursor));
+  return chunks.join("");
+}
+
+export function maskSafeNegatedGuidance(value, patterns = SAFE_NEGATION_PATTERNS) {
+  return patterns.reduce((masked, pattern) => maskPatternMatches(masked, pattern), value);
 }
 
 export function clarificationContext(question, answer) {
@@ -383,10 +407,10 @@ function assertGuideSafety(result, request) {
     result.clarificationQuestion,
     ...result.completionChecks,
   ].join(" ").replace(/\s+/g, " ");
-  const scannableText = renderedText
-    .replace(SAFE_NEGATED_DESTRUCTIVE_COMMAND_PATTERN, "")
-    .replace(SAFE_NEGATED_DOSAGE_PATTERN, "")
-    .replace(SAFE_NEGATED_ACTION_PATTERN, "");
+  // Mask safe negations in place instead of deleting them. Keeping the same
+  // string length prevents text on either side of a match from being joined
+  // into a new token that was never present in the model output.
+  const scannableText = maskSafeNegatedGuidance(renderedText);
   const prohibited = PROHIBITED_GUIDANCE_PATTERNS.some((pattern) => pattern.test(scannableText));
   if (prohibited) {
     throw new GuideAdapterError("The on-device result did not pass safety checks. Reframe the request or seek qualified help.", "UNSAFE_GUIDE");
@@ -409,7 +433,7 @@ function assertGuideSafety(result, request) {
     ...result.steps.flatMap((step) => [step.title, step.instruction]),
   ];
   if (medicationContext && medicationActionFields.some((field) => {
-    const scannable = field.replace(SAFE_NEGATED_MEDICATION_ACTION_PATTERN, "").trim();
+    const scannable = maskSafeNegatedGuidance(field, [SAFE_NEGATED_MEDICATION_ACTION_PATTERN]).trim();
     return DIRECT_MEDICATION_ACTION_PATTERN.test(scannable)
       && (MEDICATION_QUANTITY_OR_SCHEDULE_PATTERN.test(scannable) || MEDICATION_REFERENCE_PATTERN.test(scannable));
   })) {

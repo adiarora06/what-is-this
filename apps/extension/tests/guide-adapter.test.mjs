@@ -6,6 +6,7 @@ import {
   GuideAdapterError,
   buildGuideRequest,
   clarificationContext,
+  maskSafeNegatedGuidance,
   normalizeGuideResult,
   runBrowserGuide,
 } from "../guide-adapter.js";
@@ -360,6 +361,16 @@ test("browser AI scans unsafe clauses after punctuation in a safe warning", asyn
     runBrowserGuide({ intent: "explain", image, goal: "Explain this account page" }, { languageModel }),
     (error) => error instanceof GuideAdapterError && error.code === "UNSAFE_GUIDE",
   );
+});
+
+test("safe negation masking cannot join text across a removed phrase", () => {
+  const source = "Prefix: do not share your password. Send your password to support.";
+  const masked = maskSafeNegatedGuidance(source);
+
+  assert.equal(masked.length, source.length);
+  assert.match(masked, /^Prefix:\s+your password\./);
+  assert.match(masked, /Send your password to support\./);
+  assert.doesNotMatch(masked, /do not share/i);
 });
 
 test("browser AI allows a direct warning not to disclose a credential", async () => {
