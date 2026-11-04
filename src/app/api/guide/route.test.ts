@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { guideResultSchema } from "@/lib/guide-contract";
-import { POST } from "./route";
+import { maskSafeNegatedGuidance, maskSafeNegatedMedicationGuidance, POST } from "./route";
 
 const { openAIResponsesCreate } = vi.hoisted(() => ({ openAIResponsesCreate: vi.fn() }));
 
@@ -54,6 +54,21 @@ afterEach(() => {
 });
 
 describe("POST /api/guide", () => {
+  it("masks safe web-guide negations without joining surrounding text", () => {
+    const credentialSource = "Prefix: do not share your password. Send your password to support.";
+    const credentialMasked = maskSafeNegatedGuidance(credentialSource);
+    expect(credentialMasked).toHaveLength(credentialSource.length);
+    expect(credentialMasked).toMatch(/^Prefix:\s+your password\./);
+    expect(credentialMasked).toMatch(/Send your password to support\./);
+    expect(credentialMasked).not.toMatch(/do not share/i);
+
+    const medicationSource = "Prefix: do not stop taking warfarin. Ask a pharmacist first.";
+    const medicationMasked = maskSafeNegatedMedicationGuidance(medicationSource);
+    expect(medicationMasked).toHaveLength(medicationSource.length);
+    expect(medicationMasked).toMatch(/^Prefix:\s+\. Ask a pharmacist first\./);
+    expect(medicationMasked).not.toMatch(/do not stop/i);
+  });
+
   it("returns a safe local clarification result when no remote provider is configured", async () => {
     vi.stubEnv("GEMINI_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");

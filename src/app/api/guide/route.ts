@@ -132,6 +132,30 @@ const PROHIBITED_GUIDANCE_PATTERNS = [
 const SAFE_NEGATED_ACTION_PATTERN = /\b(?:do not|don['’]t|never|avoid)\s+(?:share|send|paste|upload|provide|reveal|enter|bypass|disable|defeat|override|remove|tamper|run|execute|touch|cut|splice|bridge|short|open|disassemble|mix|combine|build|make|assemble|modify|wire|transfer|pay)\b/gi;
 const SAFE_NEGATED_DESTRUCTIVE_COMMAND_PATTERN = /\b(?:do not|don['’]t|never|avoid)\s+(?:run|execute)\s+(?:the\s+command\s+)?(?:rm\s+-rf|diskpart\s+clean|format\s+[a-z]:|curl\b.{0,100}\|\s*(?:sh|bash)|invoke-expression|downloadstring\s*\()/gi;
 
+function maskPatternMatches(value: string, pattern: RegExp) {
+  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+  const matcher = new RegExp(pattern.source, flags);
+  const chunks: string[] = [];
+  let cursor = 0;
+
+  for (const match of value.matchAll(matcher)) {
+    const index = match.index ?? cursor;
+    chunks.push(value.slice(cursor, index), " ".repeat(match[0].length));
+    cursor = index + match[0].length;
+  }
+  chunks.push(value.slice(cursor));
+  return chunks.join("");
+}
+
+export function maskSafeNegatedGuidance(value: string) {
+  return [SAFE_NEGATED_DESTRUCTIVE_COMMAND_PATTERN, SAFE_NEGATED_ACTION_PATTERN]
+    .reduce((masked, pattern) => maskPatternMatches(masked, pattern), value);
+}
+
+export function maskSafeNegatedMedicationGuidance(value: string) {
+  return maskPatternMatches(value, SAFE_NEGATED_MEDICATION_CLAUSE_PATTERN);
+}
+
 let openaiClient: OpenAI | null = null;
 
 function getOpenAIClient() {
@@ -258,9 +282,7 @@ function guideText(content: GuideContent) {
 }
 
 function hasProhibitedGuidance(content: GuideContent) {
-  const scannableText = guideText(content)
-    .replace(SAFE_NEGATED_DESTRUCTIVE_COMMAND_PATTERN, "")
-    .replace(SAFE_NEGATED_ACTION_PATTERN, "");
+  const scannableText = maskSafeNegatedGuidance(guideText(content));
   return PROHIBITED_GUIDANCE_PATTERNS.some((pattern) => pattern.test(scannableText));
 }
 
@@ -286,7 +308,7 @@ function hasUnsafeMedicationAction(content: GuideContent, request: GuideRequest)
   ];
 
   return actionableFields.some((field) => {
-    const scannable = field.replace(SAFE_NEGATED_MEDICATION_CLAUSE_PATTERN, "").trim();
+    const scannable = maskSafeNegatedMedicationGuidance(field).trim();
     if (!scannable) return false;
     const hasDoseAmount = new RegExp(String.raw`\b${DOSAGE_AMOUNT_SOURCE}\b`, "i").test(scannable);
     if (!hasDoseAmount && QUALIFIED_MEDICATION_REFERRAL_ONLY_PATTERN.test(scannable)) return false;
