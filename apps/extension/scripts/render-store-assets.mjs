@@ -4,7 +4,6 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const extensionDirectory = resolve(scriptDirectory, "..");
@@ -233,6 +232,7 @@ export async function renderStoreAssets() {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Could not start the local Store artwork renderer.");
     const origin = `http://127.0.0.1:${address.port}`;
+    const { chromium } = await import("playwright");
     browser = await chromium.launch({ headless: true });
 
     const captureContext = await browser.newContext({ viewport: { width: 860, height: 744 }, deviceScaleFactor: 1 });
