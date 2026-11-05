@@ -208,9 +208,11 @@ async function identifyWithGemini(parsed: RequestPayload) {
     .filter(Boolean)
     .join(" ");
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    // Keep credentials out of URLs, which are routinely captured by proxies,
+    // request logs, browser history, and error-reporting tools.
+    headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
     body: JSON.stringify({
       contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType: image.mimeType, data: image.data } }] }],
       generationConfig: { responseMimeType: "application/json", temperature: 0.1 },
