@@ -138,6 +138,7 @@ In Render, set `VISION_BACKEND_TOKEN` to the same generated value used by Vercel
 For free global abuse protection, create a Cloudflare Turnstile widget for the production hostname and set both its public site key and secret in Vercel. Keep `REQUIRE_TURNSTILE=true` in production. Local development can leave all three Turnstile variables empty and `REQUIRE_TURNSTILE=false`.
 
 Do not commit real API keys. Add them in the Vercel dashboard or with `npx vercel@latest env add`.
+Gemini credentials remain server-only and are sent to Google in the `x-goog-api-key` header, never in request URLs or browser code.
 
 The repo includes `render.yaml` and `model-service/Dockerfile` for a Render Docker deployment.
 

@@ -136,6 +136,30 @@ describe("POST /api/identify", () => {
     expect(response.headers.get("x-vision-provider")).toBeNull();
   });
 
+  it("authenticates Gemini through a header without putting credentials in the request URL or logs", async () => {
+    const apiKey = "identify-key-that-must-never-appear-in-a-url";
+    vi.stubEnv("GEMINI_API_KEY", apiKey);
+    const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        candidates: [{ content: { parts: [{ text: JSON.stringify(providerCard()) }] } }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(request({ image, provider: "gemini" }));
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload).toMatchObject({ ok: true, provider: "gemini", model: "gemini-test-model" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [providerUrl, providerOptions] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(new URL(providerUrl).search).toBe("");
+    expect(providerUrl).not.toContain(apiKey);
+    expect(new Headers(providerOptions.headers).get("x-goog-api-key")).toBe(apiKey);
+    expect(JSON.stringify(info.mock.calls)).not.toContain(apiKey);
+  });
+
   it("uses the automatic provider order and returns earlier failures as warnings", async () => {
     vi.stubEnv("GEMINI_API_KEY", "gemini-test-key");
     vi.stubEnv("VISION_BACKEND_URL", "https://classifier.example/");
